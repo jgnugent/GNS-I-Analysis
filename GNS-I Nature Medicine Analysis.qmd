@@ -1,0 +1,2994 @@
+---
+title: "Global Outcomes of Traumatic Brain Injury Across Human Development Index Strata: A Multi-Center, International, Prospective Cohort Study"
+date: June 14, 2026
+author:
+  - name: Joseph G. Nugent, MD, MPH, MHS, CPH
+    orcid: 0000-0002-6863-4523
+    email: nugentj@ohsu.edu
+execute:
+  echo: true
+  warning: false
+format:
+  html:
+    anchor-sections: false
+    cap-location: top
+    citations-hover: true
+    code-copy: true
+    code-fold: true
+    code-line-numbers: true
+    code-overflow: wrap
+    code-tools: true
+    crossref:
+      fig-title: '<strong>Figure'
+      tbl-title: '<strong>Table'
+      title-delim: '</strong>:'
+    css: /Users/JosephNugent/GitHub/quarto/_includes/styles.css
+    df-print: paged
+    embed-resources: true
+    fig-align: center
+    fig-width: 8
+    fontsize: 17px
+    html-math-method: katex
+    link-external-icon: true
+    link-external-newwindow: true
+    mainfont: EB Garamond
+    number-sections: false
+    page-layout: full
+    theme:
+      - default
+      - /Users/JosephNugent/GitHub/quarto/_includes/custom.scss
+    toc: true
+    toc-title: Contents
+csl: https://www.zotero.org/styles/american-medical-association
+bibliography: references.bib
+nocite: |
+  @wdi2022, @hdr2021, @harris2019
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(easystats)
+librarian::shelf(
+  jgntools,
+  cobalt,
+  countrycode,
+  emmeans,
+  epiR,
+  fastDummies,
+  GLMMmisc,
+  pwr,
+  rnaturalearth,
+  WeightIt
+)
+```
+
+```{r}
+#| label: Define functions
+
+theme_set(theme_jgn())
+
+# Disable scientific notation
+options(scipen = 999)
+options(knitr.table.format = 'html')
+#options(knitr.table.format = 'pipe')
+options(knitr.kable.NA = '')
+
+jgntools::resolve_conflicts()
+
+sysfonts::font_add_google('EB Garamond')
+
+font <- 'EB Garamond'
+```
+
+```{r}
+#| label: Load Stored Dataset Objects
+
+load('./GNS-I_Analytic Dataset.RData')
+```
+
+```{r}
+#| label: Creation of World Shape File for Map Figures
+
+world_sf <- ne_countries(scale = 'large', returnclass = 'sf') %>% 
+  mutate(
+    country_code = countrycode(name_sort, origin = 'country.name', destination = 'iso2c') %>% factor()
+  ) %>% left_join(
+  .,
+  gns %>% 
+    tabyl(country_code) %>% 
+    filter(!is.na(country_code)) %>% 
+    rename(patients_enrolled = n) %>% 
+    select(country_code, patients_enrolled),
+  by = c('country_code' = 'country_code')
+) %>% 
+  left_join(
+    .,
+    aggregate_country_data %>%
+      tabyl(country_code) %>%
+      filter(!is.na(country_code)) %>%
+      rename(participating_centers = n) %>%
+      select(country_code, participating_centers),
+    by = c('country_code' = 'country_code')
+  ) %>%
+  left_join(
+    .,
+    aggregate_country_data %>% distinct(country_code, .keep_all = TRUE),
+    by = c('country_code' = 'country_code')
+  )%>% 
+  left_join(
+    .,
+    gns %>% 
+      tabyl(country_code, mortality_24h, show_na = FALSE) %>% 
+      adorn_percentages() %>% 
+      adorn_pct_formatting(affix_sign = FALSE) %>% 
+      mutate(mortality_24h = Deceased %>% as.numeric()) %>% 
+      select(country_code, mortality_24h),
+    by = c('country_code' = 'country_code')
+  ) %>% 
+  left_join(
+    .,
+    gns %>% 
+      tabyl(country_code, mortality_30d, show_na = FALSE) %>% 
+      adorn_percentages() %>% 
+      adorn_pct_formatting(affix_sign = FALSE) %>% 
+      mutate(mortality_30d = Deceased %>% as.numeric()) %>% 
+      select(country_code, mortality_30d),
+    by = c('country_code' = 'country_code')
+  ) %>% 
+  left_join(
+    .,
+    gns %>% 
+      tabyl(country_code, mortality_90d, show_na = FALSE) %>% 
+      adorn_percentages() %>% 
+      adorn_pct_formatting(affix_sign = FALSE) %>% 
+      mutate(mortality_90d = Deceased %>% as.numeric()) %>% 
+      select(country_code, mortality_90d),
+    by = c('country_code' = 'country_code')
+  ) %>% 
+  left_join(
+    .,
+    gns %>% 
+      tabyl(country_code, mortality_discharge, show_na = FALSE) %>% 
+      adorn_percentages() %>% 
+      adorn_pct_formatting(affix_sign = FALSE) %>% 
+      mutate(mortality_discharge = Deceased %>% as.numeric()) %>% 
+      select(country_code, mortality_discharge),
+    by = c('country_code' = 'country_code')
+  ) %>% 
+  left_join(
+    .,
+    gns %>% 
+      tabyl(country_code, lasting_complications, show_na = FALSE) %>% 
+      adorn_percentages() %>% 
+      adorn_pct_formatting(affix_sign = FALSE) %>% 
+      mutate(lasting_complications = `Complication Occurrence` %>% as.numeric()) %>% 
+      select(country_code, lasting_complications),
+    by = c('country_code' = 'country_code')
+  )
+```
+
+```{r}
+#| label: Creation of Weighted Dataset
+
+gns_results_df <- gns %>% 
+  mutate(
+    hdi_tier = hdi_tier %>% relevel(ref = 'Very High Human Development'),
+    mean_years_schooling_log = log(mean_years_schooling),
+    pre_injury_asa = pre_injury_asa %>% fct_recode(
+      'ASA I' = 'ASA I: A normal healthy patient',
+      'ASA II' = 'ASA II: A patient with mild systemic disease',
+      'ASA III' = 'ASA III: A patient with severe systemic disease',
+      'ASA IV' = 'ASA IV: A patient with severe systemic disease that is a constant threat to life',
+      'ASA V' = 'ASA V: A moribund patient who is not expected to survive without the operation',
+      'ASA VI' = 'ASA VI: A declared brain-dead patient whose organs are being removed for donor purposes',
+    ),
+    pre_injury_asa = pre_injury_asa %>% fct_collapse(
+      'ASA IV, V, VI' = c(
+        'ASA IV',
+        'ASA V',
+        'ASA VI'
+      )
+    ) %>% factor()
+  ) %>% 
+  mutate(
+    secondary_med_problems_present = secondary_med_problems_present %>% fct_recode(
+      'Comorbidities Present' = 'Yes',
+      'No Comorbidities on Admission' = 'No'
+    ),
+    mechanical_ventilation = mechanical_ventilation %>% fct_recode(
+      'On mechanically assisted ventilation' = 'Yes',
+      'Breathing spontaneously' = 'No'
+    ),
+    sedation_midazolam = sedation_midazolam %>% fct_recode(
+      'Midazolam Used as Sedative' = 'Yes',
+      'Midazolam Not Used as Sedative' = 'No'
+    ),
+  ) %>% 
+  copy_labels_from(gns) %>% 
+  set_variable_labels(
+    secondary_med_problems_present = 'Secondary Medical Problems Present on Admission',
+    mechanical_ventilation = 'Mechanical Ventilation',
+    sedation_midazolam = 'Sedation with Midazolam',
+    gcs_24h_numeric = 'GCS within First 24 Hours',
+    mean_years_schooling_log = 'Mean Years of Schooling (log years)'
+  ) %>% 
+  relocate(mean_years_schooling_log, .after = mean_years_schooling)
+
+gns_weights_df <- gns_results_df %>% 
+  filter(
+    if_all(
+      one_of(
+        'hdi_tier',
+        'age_at_injury',
+        'sex',
+        'gcs_24h_numeric',
+        'pre_injury_asa',
+        'mechanical_ventilation',
+        'pupil_reactivity',
+        'injury_mechanism',
+        'admission_asa',
+        'c_spine_injury',
+        'polytrauma',
+        'prehosp_intubation',
+        'mean_years_schooling_log',
+        'gini_index'
+      ),
+      ~!is.na(.)
+    )
+  ) %>% 
+  mutate(
+    admission_asa = admission_asa %>% fct_recode(
+      'ASA I' = 'ASA I: A normal healthy patient',
+      'ASA II' = 'ASA II: A patient with mild systemic disease',
+      'ASA III' = 'ASA III: A patient with severe systemic disease',
+      'ASA IV' = 'ASA IV: A patient with severe systemic disease that is a constant threat to life',
+      'ASA V' = 'ASA V: A moribund patient who is not expected to survive without the operation',
+      'ASA VI' = 'ASA VI: A declared brain-dead patient whose organs are being removed for donor purposes',
+    )
+  )
+
+gns_weights <- weightit(
+  hdi_tier ~ age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + injury_mechanism + admission_asa + c_spine_injury + polytrauma + prehosp_intubation + mean_years_schooling_log + gini_index,
+  data = gns_weights_df,
+  method = 'gbm',
+  estimand = 'ATE',
+  stabilize = FALSE
+)
+
+gns_weights_df <- gns_weights_df %>% 
+  mutate(
+    ipw = get.w(gns_weights)
+  )
+
+gns_weights_all <- gns_results_df %>% 
+  left_join(
+    .,
+    gns_weights_df %>% 
+      select(
+        one_of('record_id', 'ipw')
+      ),
+    by = c(
+      'record_id' = 'record_id'
+    )
+  ) %>% 
+  mutate(
+    ipw = case_when(
+      is.na(ipw) ~ 1,
+      .default = ipw
+    )
+  ) %>% 
+  set_variable_labels(
+    ipw = 'Inverse Probability Weight'
+  )
+```
+
+```{r}
+#| label: Creation of Analytic Models for all Outcomes
+
+mortality_discharge_model <- glmer(
+  mortality_discharge ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_discharge ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  weights = ipw,
+  family = 'binomial'
+)
+
+mortality_discharge_model_unweighted <- glmer(
+  mortality_discharge ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_discharge ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  family = 'binomial'
+)
+
+mortality_90d_model <- glmer(
+  mortality_90d ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_90d ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  weights = ipw,
+  family = 'binomial'
+)
+
+mortality_90d_model_unweighted <- glmer(
+  mortality_90d ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_90d ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  family = 'binomial'
+)
+
+lasting_complications_model <- glmer(
+  lasting_complications ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + secondary_med_problems_present + sedation_midazolam + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(lasting_complications ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  weights = ipw,
+  family = 'binomial'
+)
+
+lasting_complications_model_unweighted <- glmer(
+  lasting_complications ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + secondary_med_problems_present + sedation_midazolam + gni_per_capita + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(lasting_complications ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all),
+  family = 'binomial'
+)
+```
+
+# Study Summary
+
+::: {.panel-tabset}
+
+## Dataset Summary
+
+```{r}
+#| label: tbl-summarize_dataset
+#| tbl-cap: 'Summary of all countries and collaborators registered with RedCap, countries and institutions contributing records to RedCap, total patients and number of observations per patient in the final analytic dataset.'
+
+dataset_summary <- gns %>% 
+	summarise(
+		'Hospitals Reporting' = n_distinct(institution),
+		'Countries Reporting' = n_distinct(country),
+		'Patients' = n_distinct(gns$record_id),
+		'Observations' = gns %>% select(1:gini_index) %>% ncol()
+	) %>% 
+  mutate_if(is.numeric, function(x){format(x, big.mark = ',')})
+
+dataset_summary %>% 
+	print_kable()
+```
+
+## Participating Countries
+
+```{r}
+#| label: Leaflet
+
+# Palettes at: https://www.datanovia.com/en/blog/top-r-color-palettes-to-know-for-great-data-visualization/
+pal_factor <-
+  colorFactor(
+    palette = 'viridis',
+    domain = world_sf$hdi_tier,
+    na.color = 'transparent'
+  )
+
+polygon_labels <- paste(
+  '<strong>Country:</strong> ', world_sf$name_en,'<br/>', 
+  '<strong>World Bank Region:</strong> ', world_sf$region_wb,'<br/>', 
+  '<strong>Population:</strong> ', format(world_sf$pop_est %>% as.numeric(), big.mark = ','),' (', world_sf$pop_year,')<br/>',
+  '<strong>GDP Estimate:</strong> $', format(world_sf$gdp_md, big.mark = ','),' (', world_sf$gdp_year,')<br/>',
+  '<strong>Economy:</strong> ', world_sf$economy,'<br/>',
+  '<strong>Income Group:</strong> ', world_sf$income_grp,'<br/>',
+  '<strong>Human Development Index (HDI) Rank (2021):</strong> ', world_sf$hdi_rank,'<br/>',
+  '<strong>HDI Value:</strong> ', world_sf$hdi_value,'<br/>',
+  '<strong>HDI Tier (2021):</strong> ', world_sf$hdi_tier,'<br/>',
+  '<strong>Gini Index:</strong> ', world_sf$gini_index,' (', world_sf$gini_year,')<br/>',
+  '<strong>Participating Centers:</strong> ', world_sf$participating_centers,'<br/>', 
+  '<strong>Patients Enrolled:</strong> ', format(world_sf$patients_enrolled, big.mark = ','),'<br/>', 
+  '<strong>Mortality Rate (24 hours):</strong> ', format(world_sf$mortality_24h, big.mark = ','), '%<br/>', 
+  '<strong>Mortality Rate (Discharge):</strong> ', format(world_sf$mortality_discharge, big.mark = ','),'%<br/>', 
+  '<strong>Mortality Rate (30 days):</strong> ', format(world_sf$mortality_30d, big.mark = ','), '%<br/>', 
+  '<strong>Mortality Rate (90 days):</strong> ', format(world_sf$mortality_90d, big.mark = ','), '%<br/>', 
+  '<strong>Complication Rate:</strong> ', format(world_sf$lasting_complications, big.mark = ','), '%', 
+  sep='') %>%
+  lapply(htmltools::HTML)
+
+leaflet(
+  world_sf %>% st_transform(crs = '+proj=longlat +datum=WGS84'),
+  width = '100%'
+) %>% 
+  addTiles(options = providerTileOptions(noWrap = TRUE))  %>%
+  addProviderTiles(provider = 'CartoDB.Positron') %>%
+  setView(lat = 10, lng = 0 , zoom = 1) %>%
+  addPolygons(
+    popup = polygon_labels,
+    stroke = TRUE,
+    weight = 0.2,
+    color = 'black',
+    opacity = 1,
+    smoothFactor = 0,
+    fillOpacity = 0.5,
+    fillColor = ~pal_factor(hdi_tier)
+  ) %>%
+  addLegend(
+    position = 'bottomright',
+    pal = pal_factor,
+    values = ~hdi_tier,
+    title = 'Human Development Index Tier',
+    opacity = 1
+  ) %>%
+  addScaleBar(position = 'bottomleft')
+```
+
+
+::::
+
+# Power Calculation, Prevalence of Outcomes
+
+::: {.panel-tabset}
+
+## Power Calculation
+
+```{r}
+power_test <- pwr.2p.test(
+	h = ES.h(0.25, 0.2),
+	sig.level = 0.05,
+	power = 0.8,
+	alternative = 'two.sided'
+) %>% 
+	tidy()%>% 
+	mutate(
+		Test = 'Difference of proportion power calculation for binomial distribution (arcsine transformation)',
+		`Alternative Hypothesis` = 'Two-Sided',
+		`Estimated Required Sample Size` = paste0('n = ', n %>% round(digits = 0))
+	) %>% 
+	rename(
+		`Significance Level` = sig.level,
+		Power = power
+	) %>% 
+	select(Test, `Alternative Hypothesis`, `Significance Level`, Power, `Estimated Required Sample Size`) 
+
+power_test %>% 
+	print_kable() %>% 
+  cols_width(
+    Test ~ px(250)
+  )
+```
+
+## Prevalence and Confidence Intervals
+
+::: {.panel-tabset}
+
+### Lasting Medical Complications
+
+```{r}
+#| label: tbl-lasting_complications-prevalence
+#| tbl-cap: Prevalence and Clopper–Pearson[@clopper1934] exact 95% confidence intervals generated for occurrence of lasting medical complications throughout the entire GNS-I analytic sample.
+
+bind_rows(
+  epi.conf(
+    cbind(summary(gns$lasting_complications)[['Complication Occurrence']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(gns %>% nrow()) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate, ' (', ci_lb %>% round(), ' – ', ci_ub %>% round(), ')')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Count') %>% 
+    relocate(Metric),
+  epi.conf(
+    cbind(summary(gns$lasting_complications)[['Complication Occurrence']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(100) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate %>% round(digits = 1) %>% sprintf('%.1f', .), '% (', ci_lb %>% round(digits = 1), '% – ', ci_ub %>% round(digits = 1), '%)')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Percentage') %>% 
+    relocate(Metric),
+) %>% 
+  print_kable()
+```
+
+### Mortality at Hospital Discharge
+
+```{r}
+#| label: tbl-mortality_discharge-prevalence
+#| tbl-cap: Prevalence and Clopper–Pearson[@clopper1934] exact 95% confidence intervals for occurrence of mortality at hospital discharge throughout the entire GNS-I analytic sample.
+
+bind_rows(
+  epi.conf(
+    cbind(summary(gns$mortality_discharge)[['Deceased']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(gns %>% nrow()) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate, ' (', ci_lb %>% round(), ' – ', ci_ub %>% round(), ')')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Count') %>% 
+    relocate(Metric),
+  epi.conf(
+    cbind(summary(gns$mortality_discharge)[['Deceased']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(100) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate %>% round(digits = 1) %>% sprintf('%.1f', .), '% (', ci_lb %>% round(digits = 1), '% – ', ci_ub %>% round(digits = 1), '%)')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Percentage') %>% 
+    relocate(Metric),
+) %>% 
+  print_kable()
+```
+
+### Mortality at 90 days
+
+```{r}
+#| label: tbl-mortality_90d-prevalence
+#| tbl-cap: Prevalence and Clopper–Pearson[@clopper1934] exact 95% confidence intervals for occurrence of mortality at 90 days throughout the entire GNS-I analytic sample.
+#| 
+bind_rows(
+  epi.conf(
+    cbind(summary(gns$mortality_90d)[['Deceased']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(gns %>% nrow()) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate, ' (', ci_lb %>% round(), ' – ', ci_ub %>% round(), ')')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Count') %>% 
+    relocate(Metric),
+  epi.conf(
+    cbind(summary(gns$mortality_90d)[['Deceased']], gns %>% nrow()) %>% as.matrix(),
+    ctype = 'prevalence',
+    method = 'clopper-pearson',
+    N = gns %>% nrow(),
+    design = 1,
+    conf.level = 0.95
+  ) %>%
+    '*'(100) %>% 
+    rename(
+      estimate = est,
+      ci_lb = lower,
+      ci_ub = upper
+    ) %>% 
+    mutate(
+      `Prevalence (95% CI)` = paste0(estimate %>% round(digits = 1) %>% sprintf('%.1f', .), '% (', ci_lb %>% round(digits = 1), '% – ', ci_ub %>% round(digits = 1), '%)')
+    ) %>% 
+    select(last_col()) %>% 
+    mutate(Metric = 'Percentage') %>% 
+    relocate(Metric),
+) %>% 
+  print_kable()
+```
+
+:::
+
+:::
+
+# Tables
+
+::: {.panel-tabset}
+
+## Table 1
+
+```{r}
+#| label: tbl-table-1-demographics
+#| tbl-cap: Baseline demographic features and pre-injury clinical characteristics, mechanism of injury, transportation, and field management up to admission, and inpatient evaluation and characterization of injuries stratified by HDI tier.
+
+gns <- gns %>% 
+  mutate(
+		across(
+			function(x){
+				identical(levels(x) %>% sort(), c('No', 'Yes'))
+			},
+			function(x){
+				x %>% factor(c('Yes', 'No'))
+			}
+		)
+  ) %>% 
+  set_variable_labels(
+    vehicle_accident_type = 'Vehicle Involved',
+    gcs_numeric = 'GCS at Admission',
+    seizure_dx_clinical = 'Seizures Noted',
+    seizure_onset_timing = 'Seizure Onset',
+    icu_admission = 'ICU Admission'
+  ) %>% 
+  copy_labels_from(gns)
+
+table1_data <- gns %>% 
+  select(
+    one_of(
+      'hdi_tier',
+      'age_at_injury',
+      'sex',
+      'injury_time_known',
+      'admission_interval',
+      'tbi_history',
+      'injury_mechanism',
+      'blunt_trauma_type',
+      'injury_intention',
+      'injury_context',
+      'vehicle_accident_type',
+      'weapon_involved',
+      'pre_injury_asa',
+      'prehosp_transportation_mode',
+      'prehosp_cardiac_arrest',
+      'prehosp_intubation',
+      'prehosp_hyperventilation',
+      'admission_asa',
+      'gcs_numeric',
+      'tbi_severity',
+      'gcs_24h_numeric',
+      'tbi_severity_24h',
+      'pupil_reactivity',
+      'spinal_cord_injury',
+      'asia_scale',
+      'polytrauma',
+      'concussion',
+      'concussion_grade',
+      'scalp_injuries',
+      'skull_fracture',
+      'diastasis',
+      'edh_present',
+      'pneumocephalus',
+      'sdh_present',
+      'sah_present',
+      'contusion_present',
+      'ich_present',
+      'dai_present',
+      'brainstem_injury',
+      'herniation_present',
+      'infarction_present',
+      'cbv_injury',
+      'csf_leak_present',
+      'seizure_dx_clinical',
+      'seizure_onset_timing'
+    )
+  )
+
+table1 <- CreateTableOne(
+    data = table1_data,
+    vars = setdiff(
+      table1_data %>% names(),
+      'hdi_tier'
+    ),
+    strata = c('hdi_tier'),
+    addOverall = TRUE,
+    smd = FALSE,
+    includeNA = FALSE,
+    argsExact = list(simulate.p.value = TRUE)
+) %>% print(
+    .,
+    varLabels = TRUE,
+    showAllLevels = TRUE,
+    explain = FALSE,
+    noSpaces = TRUE,
+    printToggle = FALSE,
+    cramVars = TRUE,
+    nonnormal = nonnormal_vars,
+    exact = table1_data %>% select_if(negate(is.numeric)) %>% names()
+) %>% 
+  print_kable_one() %>% 
+  tab_footnote(html('<strong>Bolded</strong> entries in the p-value column indicate statistical significance at p<0.05.')) %>% 
+  tab_footnote(html('Continuous variables are presented as median [IQR], while categorical and dichotomous variables are presented as count (%).')) %>% 
+  tab_footnote(html('<em><strong>Abbreviations</strong>: Human Development Index (HDI). American Society of Anesthesiologists-Physical Status (ASA-PS), Traumatic brain injury (TBI), Glasgow coma scale (GCS), American Spinal Injury Association (ASIA), Colorado Medical Society (CMS), Epidural hematoma (EDH), Subdural hematoma (SDH), Subarachnoid hemorrhage (SAH), Intracerebral hemorrhage (ICH), Diffuse axonal injury (DAI), Cerebrovascular (CBV), Cerebrospinal fluid (CSF).</em>'))
+
+prehospital_nrow <- table1_data %>% 
+  select(injury_mechanism:admission_asa) %>% 
+  dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()+9
+
+inpatient_nrow <- table1_data %>% 
+  select(gcs_numeric:seizure_onset_timing) %>% 
+  dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()
+
+table1 %>% 
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Pre-Hospital Evaluation</u></strong></div>'),
+    rows = 10:prehospital_nrow,
+    id = 'prehospital'
+  ) %>% 
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Inpatient Evaluation</u></strong></div>'),
+    rows = (1+prehospital_nrow):(prehospital_nrow+inpatient_nrow),
+    id = 'inpatient'
+  ) %>% 
+  row_group_order(
+    groups = c(NA, 'prehospital', 'inpatient')
+  )
+```
+
+## Table 2
+
+```{r}
+#| label: tbl-table-2-outcomes
+#| tbl-cap: Imaging resources and medico-surgical management of injuries, mortality and morbidity outcomes, socioeconomic characteristics stratified by HDI tier.
+
+table2_data <- gns %>% 
+  select(
+    one_of(
+      'hdi_tier',
+      'head_ct',
+      'mri_brain',
+      'icp_management',
+      'sedation_used',
+      'sedation_duration',
+      'analgesia_used',
+      'analgesia_opiates',
+      'seizure_prophy_used',
+      'seizure_prophy_duration',
+      'icp_monitor_used',
+      'icp_monitor_technique',
+      'icp_meds_propofol',
+      'icp_meds_barbiturates',
+      'icp_meds_hyperosmolar',
+      'hyperosm_therapy',
+      'icp_meds_diuretics',
+      'co_monitoring',
+      'cbf_monitoring',
+      'eeg_monitoring',
+      'mechanical_ventilation',
+      'total_ventilator_days',
+      'hypothermic_therapy_used',
+      'icu_admission',
+      'feeding_oral',
+      'feeding_ng',
+      'feeding_tpn',
+      'icp_surgical_decompression_craniectomy',
+      'icp_surgical_evacuation_craniotomy',
+      'surgery_interval',
+      'highest_supervision_surgery',
+      'highest_supervision_anesthesia',
+      'intraoperative_adverse_events',
+      'reoperation_required',
+      'csf_drain_placed',
+      'csf_drain_type',
+      'mortality_24h',
+      'mortality_discharge',
+      'mortality_30d',
+      'mortality_90d',
+      'gos_30d',
+      'gos_90d',
+      'length_of_stay',
+      'discharge_destination',
+      'lasting_complications',
+      'shunt_longterm',
+      'seizures_longterm',
+      'composite_rank',
+      'mean_years_schooling',
+      'gini_index'
+    )
+  )
+
+table2 <- CreateTableOne(
+  data = table2_data,
+  vars = setdiff(
+    table2_data %>% names(),
+    'hdi_tier'
+  ),
+  strata = c('hdi_tier'),
+  addOverall = TRUE,
+  smd = FALSE,
+  includeNA = FALSE,
+  argsExact = list(simulate.p.value = TRUE)
+) %>% print(
+  .,
+  varLabels = TRUE,
+  showAllLevels = TRUE,
+  explain = FALSE,
+  noSpaces = TRUE,
+  printToggle = FALSE,
+  cramVars = TRUE,
+  nonnormal = nonnormal_vars,
+  exact = table2_data %>% select_if(negate(is.numeric)) %>% names()
+) %>% 
+  print_kable_one() %>% 
+  tab_footnote(html('<strong>Bolded</strong> entries in the p-value column indicate statistical significance at p<0.05.')) %>% 
+  tab_footnote(html('Continuous variables are presented as median [IQR], while categorical and dichotomous variables are presented as count (%).')) %>% 
+  tab_footnote(html('<em><strong>Abbreviations</strong>: Human Development Index (HDI). American Society of Anesthesiologists-Physical Status (ASA-PS), Traumatic brain injury (TBI), Glasgow coma scale (GCS), American Spinal Injury Association (ASIA), Colorado Medical Society (CMS), Epidural hematoma (EDH), Subdural hematoma (SDH), Subarachnoid hemorrhage (SAH), Intracerebral hemorrhage (ICH), Diffuse axonal injury (DAI), Cerebrovascular (CBV), Cerebrospinal fluid (CSF).</em>'))
+
+medical_nrow <- table2_data %>% 
+  select(sedation_used:feeding_tpn) %>% 
+  dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()+13
+
+surgical_nrow <- table2_data %>% 
+  select(icp_surgical_decompression_craniectomy:csf_drain_type) %>% 
+  dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()
+
+outcomes_nrow <- table2_data %>% 
+  select(mortality_24h:seizures_longterm) %>% 
+  dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()
+
+socioeconomic_nrow <- table2_data %>% 
+  select(composite_rank:gini_index) %>% 
+  # dummy_cols(remove_selected_columns = TRUE) %>% 
+  select(-ends_with('_NA')) %>% 
+  select(where(function(x){any(!is.na(x))})) %>% 
+  ncol()
+
+table2 %>% 
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Medical Management</u></strong></div>'),
+    rows = 14:medical_nrow,
+    id = 'medical'
+  ) %>% 
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Surgical & Procedural Management</u></strong></div>'),
+    rows = (medical_nrow+1):(medical_nrow+surgical_nrow),
+    id = 'surgical'
+  ) %>%
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Outcomes</u></strong></div>'),
+    rows = (1+medical_nrow+surgical_nrow):(medical_nrow+surgical_nrow+outcomes_nrow),
+    id = 'outcomes'
+  ) %>%
+  tab_row_group(
+    label = html('<div style="text-align:center;"><strong><u>Socioeconomic Data</u></strong></div>'),
+    rows = (1+medical_nrow+surgical_nrow+outcomes_nrow):(medical_nrow+surgical_nrow+outcomes_nrow+socioeconomic_nrow),
+    id = 'socioeconomic'
+  ) %>%
+  row_group_order(
+    groups = c(NA, 'medical', 'surgical', 'outcomes', 'socioeconomic')
+  )
+```
+
+## Supplementary Table 1
+
+```{r}
+#| label: tbl-supp-1_country-hdi-world-bank-gini-table
+#| tbl-cap: Countries participating in the GNS-I study, and their respective HDI value, tier, World Bank region, Gini index, number of participating hospitals and number of patients enrolled.
+
+gns %>% 
+  group_by(country) %>% 
+  summarise(
+    `Participating Hospitals` = n_distinct(institution),
+    `Patients Enrolled` = n_distinct(record_id)
+  ) %>% 
+  left_join(
+    .,
+    aggregate_country_data %>% 
+      select(country, country_code, hdi_value, hdi_tier, gini_index) %>% 
+      mutate(across(c(hdi_value, hdi_tier, gini_index), as.character)) %>% 
+      distinct(),
+    by = c(
+      'country' = 'country'
+    )
+  ) %>% 
+  left_join(
+    .,
+    ne_countries(scale = 'large', returnclass = 'sf') %>% 
+      mutate(
+        country_code = countrycode(name_sort, origin = 'country.name', destination = 'iso2c') %>% factor()
+      ) %>% 
+      select(country_code, region_wb) %>% 
+      st_drop_geometry() %>% 
+      as_tibble() %>% 
+      rowwise() %>% 
+      mutate(
+        region_wb = region_wb %>% gt::md()
+      ) %>% 
+      ungroup()
+  ) %>% 
+  rows_update(., tibble(country = 'Libya', gini_index = '–'), by = 'country') %>% 
+  rows_update(., tibble(country = 'Somalia', gini_index = '–', hdi_value = '–', hdi_tier = 'No HDI Tier Assigned for 2021-2022'), by = 'country') %>% 
+  rows_update(., tibble(country = 'Saudi Arabia', gini_index = '–'), by = 'country') %>% 
+  adorn_totals() %>% 
+  rows_update(., tibble(country = 'Total', hdi_value = '', hdi_tier = '', region_wb = '', gini_index = ''), by = 'country') %>% 
+  rename(
+    !!var_label(gns$country) := country,
+    !!var_label(gns$hdi_value) := hdi_value,
+    !!var_label(gns$hdi_tier) := hdi_tier,
+    `World Bank Region` = region_wb,
+    !!var_label(gns$gini_index) := gini_index
+  ) %>% 
+  select(`Country`, `HDI Value`, `HDI Tier`, `World Bank Region`, `Gini Index`, `Participating Hospitals`, `Patients Enrolled`) %>% 
+  print_kable(format_escape = FALSE) %>% 
+  tab_style(
+    locations = cells_body(columns = 'Country'),
+    style = cell_text(weight = 'bold')
+  ) %>% 
+  tab_style(
+    locations = cells_body(columns = 'HDI Tier', rows = Country != 'Somalia'),
+    style = cell_text(decorate = 'underline')
+  ) %>% 
+  tab_style(
+    locations = cells_body(columns = 'World Bank Region'),
+    style = cell_text(style = 'italic')
+  ) %>% 
+  tab_style(
+    style = cell_text(style = 'italic'),
+    locations = cells_body(
+      columns = 'HDI Tier',
+      rows = Country == 'Somalia'
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(
+      weight = 'bold',
+      decorate = 'underline'
+    ),
+    locations = cells_body(
+      rows = Country == 'Total'
+    )
+  )
+```
+
+## Supplementary Table 2
+
+```{r}
+#| label: tbl-supp-2_MOR-combined-output
+#| tbl-cap: Median Odds Ratio (MOR) calculated using the original methodology as posited by Merlo[@merlo2006], and separately calculated with 95% confidence intervals calculated from 1000 bootstrap replicates. The MOR can be interpreted as the ratio of odds of mortality between a high-mortality and a low-mortality country or hospital. A MOR equal to 1 indicates no variation, whereas an MOR diverging from 1 indicates substantial differences.
+
+# Note that these results are bootstrapped, and as such, point estimates and confidence intervals will vary slightly from the Knit file.
+
+tribble(
+  ~Outcome, ~`Random Effect`, ~`Median Odds Ratio (95% CI)`,
+  var_label(gns$lasting_complications), 'Country', jgn_median_odds_ratio(lasting_complications_model, 'country', include_merlo = FALSE, print = FALSE) %>% pull(2),
+  var_label(gns$lasting_complications), 'Hospital', jgn_median_odds_ratio(lasting_complications_model, 'institution', include_merlo = FALSE, print = FALSE) %>% pull(2),
+  'Mortality at Discharge', 'Country', jgn_median_odds_ratio(mortality_discharge_model, 'country', include_merlo = FALSE, print = FALSE) %>% pull(2),
+  'Mortality at Discharge', 'Hospital', jgn_median_odds_ratio(mortality_discharge_model, 'institution', include_merlo = FALSE, print = FALSE) %>% pull(2),
+  var_label(gns$mortality_90d), 'Country', jgn_median_odds_ratio(mortality_90d_model, 'country', include_merlo = FALSE, print = FALSE) %>% pull(2),
+  var_label(gns$mortality_90d), 'Hospital', jgn_median_odds_ratio(mortality_90d_model, 'institution', include_merlo = FALSE, print = FALSE) %>% pull(2),
+) %>% 
+  arrange(Outcome,`Random Effect`) %>% 
+  slice(c(1,2,5,6,3,4)) %>% 
+  print_kable() %>% 
+  tab_style(
+    locations = cells_body(columns = 'Outcome'),
+    style = cell_text(weight = 'bold')
+  ) %>% 
+  tab_style(
+    locations = cells_body(columns = 'Random Effect'),
+    style = cell_text(decorate = 'underline')
+  )
+```
+
+## Supplementary Table 3
+
+```{r}
+#| label: tbl-supp-3_EMM-combined-output
+#| tbl-cap: Estimated marginal means for prevalence of outcomes for each of the previously specified models for mortality at hospital discharge, mortality at 90 days, and lasting medical complications.
+
+bind_rows(
+  mortality_discharge_model %>% 
+    emmeans(~hdi_tier, type = 'response', infer = TRUE) %>% 
+    as_tibble() %>% 
+    slice(c(2,3,4,1)) %>% 
+    mutate(
+      outcome = 'Mortality at Hospital Discharge'
+    ),
+  mortality_90d_model %>% 
+    emmeans(~hdi_tier, type = 'response', infer = TRUE) %>% 
+    as_tibble() %>% 
+    slice(c(2,3,4,1)) %>% 
+    mutate(
+      outcome = 'Mortality at 90 days'
+    ),
+  lasting_complications_model %>% 
+    emmeans(~hdi_tier, type = 'response', infer = TRUE) %>% 
+    as_tibble() %>% 
+    slice(c(2,3,4,1)) %>% 
+    mutate(
+      outcome = 'Lasting Medical Complications'
+    )
+) %>% 
+  relocate(outcome, .before = hdi_tier) %>% 
+  rename(
+    'HDI Tier' = hdi_tier,
+    'Outcome' = outcome ,
+    'Prevalence' = prob,
+    'Standard Error' = SE,
+    'Lower CI Level' = asymp.LCL,
+    'Upper CI Level' = asymp.UCL,
+    'p-value' = p.value
+  ) %>% 
+  select(
+    -one_of(
+      'df',
+      'null',
+      'z.ratio'
+    )
+  ) %>% 
+  mutate(
+    'Print Output' = paste0(`Prevalence` %>% scales::percent(accuracy = 0.01, suffix = ''), ' (', `Lower CI Level` %>% scales::percent(accuracy = 0.01, suffix = ''), ' – ', `Upper CI Level` %>% scales::percent(accuracy = 0.01, suffix = ''), ') %')
+  ) %>% 
+  relocate('Print Output', .before = 'Prevalence') %>% 
+  rename(
+    'Prevalence (95% CI)' = 'Print Output'
+  ) %>% 
+  select(
+    one_of(
+      'Outcome',
+      'HDI Tier',
+      'Prevalence (95% CI)',
+      'p-value'
+    )
+  ) %>% 
+  print_kable(bold_p = TRUE) %>% 
+  tab_style(
+    locations = cells_body(columns = 'Outcome'),
+    style = cell_text(weight = 'bold')
+  ) %>% 
+  tab_style(
+    locations = cells_body(columns = 'HDI Tier'),
+    style = cell_text(decorate = 'underline')
+  )
+```
+
+:::
+
+# Figures
+
+::: {.panel-tabset}
+
+## Figure 1
+
+::: {.panel-tabset}
+
+### Figure 1a
+
+```{r}
+#| label: fig-1a_participating-country-HDI-tiers
+#| fig-cap: Countries participating in the Global Neurosurgical Study 1 (GNS-I) study, and their respective Human Development Index (HDI) tiers.
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% 
+    mutate(
+      hdi_tier_cat = hdi_tier %>% as.character() %>% str_replace_all(' Human Development','')
+    ),
+  aes(
+    fill = hdi_tier_cat
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.12825, 0.2175),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) + 
+  scale_fill_manual(
+    breaks = c('Low','Medium','High','Very High'),
+    values = c('#4DBBD5FF','#E64B35FF','#00A087FF','#3C5488FF') %>%
+      alpha(alpha = 0.6),
+    guide = guide_legend(
+      position = 'inside',
+      direction = 'vertical'
+    ),
+    na.value = '#DDD'
+  ) +
+  labs(
+    fill = 'HDI Tier'
+  )
+```
+
+### Figure 1b
+
+```{r}
+#| label: fig-1b_median-age-at-injury-map
+#| fig-cap: Between-country variation in median age for all institutions participating in GNS-I.
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% left_join(
+    .,
+    gns %>% 
+      group_by(country_code) %>% 
+      summarise(
+        aggregate_age_at_injury = median(age_at_injury, na.rm = TRUE)
+      ) %>% 
+      select(country_code, aggregate_age_at_injury),
+    by = c('country_code' = 'country_code')
+  ),
+  aes(
+    fill = aggregate_age_at_injury
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  scale_fill_viridis_c(
+    na.value = '#DDD',
+    guide = guide_colorbar(
+      reverse = TRUE,
+      position = 'inside',
+      direction = 'vertical'
+    )
+  ) + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.17, 0.24),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) +
+  labs(
+    fill = paste0('Median ', var_label(gns$age_at_injury))
+  )
+```
+
+### Figure 1c
+
+```{r}
+#| label: fig-1c_percent-sex-map
+#| fig-cap: Between-country variation in sex for all institutions participating in GNS-I.
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% left_join(
+      .,
+      gns %>% 
+        tabyl(country_code, sex, show_na = FALSE) %>% 
+        adorn_percentages() %>% 
+        adorn_pct_formatting(affix_sign = FALSE) %>% 
+        mutate(sex = Female %>% as.numeric()) %>% 
+        select(country_code, sex),
+      by = c('country_code' = 'country_code')
+    ) %>% 
+    mutate(
+      sex_cat = case_when(
+        sex >= 0 & sex < 10 ~ '0 - 10',
+        sex >= 10 & sex < 20 ~ '10 - 20',
+        sex >= 20 & sex < 30 ~ '20 - 30',
+        sex >= 30 & sex < 40 ~ '30 - 40',
+        sex >= 40 & sex <= 50 ~ '40 - 50',
+        sex >= 50 & sex <= 60 ~ '50 - 60',
+        .default = NA_character_
+      ) %>% 
+        factor(c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50','50 - 60'))
+    ),
+  aes(
+    fill = sex_cat
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.125, 0.2425),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) + 
+  scale_fill_manual(
+    breaks = c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50','50 - 60'),
+    values = c('#00468BFF','#ED0000FF','#42B540FF','#0099B4FF','#925E9FFF','#FDAF91FF') %>% 
+      alpha(alpha = 0.6),
+    guide = guide_legend(
+      position = 'inside',
+      direction = 'vertical'
+    ),
+    na.value = '#DDD'
+  ) +
+  labs(
+    fill = 'Female (%)'
+  )
+```
+
+### Figure 1d
+
+```{r}
+#| label: fig-1d_median-gcs-on-admission-map
+#| fig-cap: Between-country variation in median presenting Glasgow Coma Scale (GCS) for all institutions participating in GNS-I.
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% left_join(
+    .,
+    gns %>% 
+      group_by(country_code) %>% 
+      summarise(
+        aggregate_gcs_numeric = median(gcs_numeric, na.rm = TRUE)
+      ) %>% 
+      select(country_code, aggregate_gcs_numeric),
+    by = c('country_code' = 'country_code')
+  ),
+  aes(
+    fill = aggregate_gcs_numeric
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  scale_fill_viridis_c(
+    na.value = '#DDD',
+    guide = guide_colorbar(
+      reverse = TRUE,
+      position = 'inside',
+      direction = 'vertical'
+    )
+  ) + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.17, 0.24),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) +
+  labs(
+    fill = paste0('Median GCS on Admission')
+  )
+```
+
+:::
+
+## Figure 2
+
+::: {.panel-tabset}
+
+### Figure 2a
+
+```{r}
+#| label: fig-2a_hdi-tiers-vs-mortality-at-discharge
+#| fig-cap: Between-country variation in mortality at hospital discharge for all institutions participating in the Global Neurosurgical Study 1 (GNS-I).
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% 
+    mutate(
+      mortality_discharge_cat = case_when(
+        mortality_discharge >= 0 & mortality_discharge < 10 ~ '0 - 10',
+        mortality_discharge >= 10 & mortality_discharge < 20 ~ '10 - 20',
+        mortality_discharge >= 20 & mortality_discharge < 30 ~ '20 - 30',
+        mortality_discharge >= 30 & mortality_discharge < 40 ~ '30 - 40',
+        mortality_discharge >= 40 & mortality_discharge <= 50 ~ '40 - 50',
+        .default = NA_character_
+      ) %>% 
+        factor(c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50'))
+    ),
+  aes(
+    fill = mortality_discharge_cat
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.125, 0.2425),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) + 
+  scale_fill_manual(
+    breaks = c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50'),
+    values = c('#4DBBD5FF','#E64B35FF','#00A087FF','#3C5488FF', '#F39B7FFF') %>%
+      alpha(alpha = 0.6),
+    guide = guide_legend(
+      position = 'inside',
+      direction = 'vertical'
+    ),
+    na.value = '#DDD'
+  ) +
+  labs(
+    fill = 'Deceased (%)'
+  )
+```
+
+### Figure 2b
+
+```{r}
+#| label: fig-2b_hdi-tiers-vs-mortality-at-90-days
+#| fig-cap: Between-country variation in mortality at 90-days for all institutions participating in the Global Neurosurgical Study 1 (GNS-I).
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% 
+    mutate(
+      mortality_90d_cat = case_when(
+        mortality_90d >= 0 & mortality_90d < 20 ~ '0 - 20',
+        mortality_90d >= 20 & mortality_90d < 40 ~ '20 - 40',
+        mortality_90d >= 40 & mortality_90d < 60 ~ '40 - 60',
+        mortality_90d >= 60 & mortality_90d <= 80 ~ '60 - 80'
+      ) %>% 
+        factor(c('0 - 20','20 - 40','40 - 60','60 - 80'))
+    ),
+  aes(
+    fill = mortality_90d_cat
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.18125, 0.215),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) + 
+  scale_fill_manual(
+    breaks = c('0 - 20','20 - 40','40 - 60','60 - 80'),
+    values = c('#4DBBD5FF','#E64B35FF','#00A087FF','#3C5488FF') %>%
+      alpha(alpha = 0.6),
+    guide = guide_legend(
+      position = 'inside',
+      direction = 'vertical'
+    ),
+    na.value = '#DDD'
+  ) +
+  labs(
+    fill = 'Deceased at 90 days (%)'
+  )
+```
+
+### Figure 2c
+
+```{r}
+#| label: fig-2c_hdi-tiers-vs-lasting-medical-complications
+#| fig-cap: Between-country variation in lasting medical complications for all institutions participating in the Global Neurosurgical Study 1 (GNS-I).
+#| fig-width: 12
+
+ggplot(
+  data = world_sf %>% 
+    mutate(
+      lasting_complications_cat = case_when(
+        lasting_complications >= 0 & lasting_complications < 20 ~ '0 - 20',
+        lasting_complications >= 20 & lasting_complications < 40 ~ '20 - 40',
+        lasting_complications >= 40 & lasting_complications < 60 ~ '40 - 60',
+        lasting_complications >= 60 & lasting_complications < 80 ~ '60 - 80',
+        .default = NA_character_
+      ) %>% 
+        factor(c('0 - 20','20 - 40','40 - 60','60 - 80'))
+    ),
+  aes(
+    fill = lasting_complications_cat
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.15, 0.2375),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) + 
+  scale_fill_manual(
+    breaks = c('0 - 20','20 - 40','40 - 60','60 - 80'),
+    values = c('#4DBBD5FF','#E64B35FF','#00A087FF','#3C5488FF') %>%
+      alpha(alpha = 0.6),
+    guide = guide_legend(
+      position = 'inside',
+      direction = 'vertical'
+    ),
+    na.value = '#DDD'
+  ) +
+  labs(
+    fill = 'Lasting Medical\nComplications (%)'
+  )
+```
+
+:::
+
+## Figure 3
+
+::: {.panel-tabset}
+
+### Figure 3a
+
+```{r}
+#| label: fig-3a_interval-hdi-tier
+#| fig-cap: Distribution of intervals from time of injury to time of admission, and time of injury to time of surgery, respectively, stratified by HDI Tier.
+#| fig-width: 12
+#| fig-height: 7
+
+admission_interval_data <- gns %>% 
+  filter(!is.na(hdi_tier) & !is.na(admission_interval) & admission_interval >= 0)
+
+surgery_interval_data <- gns %>% 
+  filter(!is.na(hdi_tier) & !is.na(surgery_interval) & surgery_interval >= 0)
+
+median_data <- bind_rows(
+  admission_interval_data %>% 
+    group_by(hdi_tier) %>% 
+    summarise(
+      median = median(admission_interval, na.rm = TRUE)
+    ) %>% 
+    mutate(
+      metric = var_label(gns$admission_interval)
+    ),
+  surgery_interval_data %>% 
+    group_by(hdi_tier) %>% 
+    summarise(
+      median = median(surgery_interval, na.rm = TRUE)
+    ) %>% 
+    mutate(
+      metric = var_label(gns$surgery_interval)
+    )
+) %>% 
+  filter(!is.na(hdi_tier))
+
+ggplot(
+  data = bind_rows(
+    admission_interval_data %>% 
+      mutate(
+        interval = admission_interval,
+        metric = var_label(gns$admission_interval)
+      ),
+    surgery_interval_data %>% 
+      mutate(
+        interval = surgery_interval,
+        metric = var_label(gns$surgery_interval)
+      ),
+  ) %>% 
+    filter(!is.na(hdi_tier)) %>% 
+    mutate(
+      metric = metric %>% factor(
+        c('Hours from Time of Injury to Admission', 'Hours from Injury to Surgery')
+      )
+    ) %>% 
+    select(one_of('hdi_tier', 'interval', 'metric')),
+  aes(
+    x = hdi_tier,
+    y = interval,
+    fill = metric
+  )
+) + 
+  geom_boxplot(
+    outliers = FALSE,
+    alpha = 0.75
+  ) + 
+  geom_label(
+    data = median_data,
+    aes(
+      x = hdi_tier,
+      y = median,
+      label = scales::number(median, accuracy = 0.1),
+      color = 'white'
+    ),
+    position = position_dodge(width = -0.75),
+    show.legend = FALSE,
+    alpha = 0.9
+  ) +
+  coord_cartesian(ylim = c(0,225)) + 
+  theme_jgn() + 
+  theme(
+    legend.position = 'top'
+  ) +
+  scale_fill_npg() +
+  scale_color_manual(name = 'color', values = c('#FFF')) +
+  labs(
+    x = var_label(gns$hdi_tier),
+    y = 'Interval (hours)',
+    fill = element_blank()
+  )
+```
+
+### Figure 3b
+
+```{r}
+#| label: fig-3b_alluvial-gos-vs--hdi-tier
+#| fig-cap: Alluvial plot comparing Glasgow Outcome Scale (GOS) scores at 30-days and 90-days post-injury stratified by HDI tier.
+#| fig-width: 14
+#| fig-height: 7
+
+ggplot(
+  data = bind_rows(
+    gns %>% 
+      filter(!is.na(gos_30d) & !is.na(gos_90d) & !is.na(hdi_tier)) %>% 
+      tabyl(gos_30d, hdi_tier) %>% 
+      adorn_percentages(denominator = 'col') %>% 
+      pivot_longer(!gos_30d, names_to = 'hdi_tier', values_to = 'outcome_pct') %>% 
+      mutate(
+        outcome_time = '30 days',
+        outcome_pct = outcome_pct %>% as.numeric()
+      ) %>% 
+      rename(outcome_gos = gos_30d),
+    gns %>% 
+      filter(!is.na(gos_90d) & !is.na(gos_90d) & !is.na(hdi_tier)) %>% 
+      tabyl(gos_90d, hdi_tier) %>% 
+      adorn_percentages(denominator = 'col') %>% 
+      pivot_longer(!gos_90d, names_to = 'hdi_tier', values_to = 'outcome_pct') %>% 
+      mutate(
+        outcome_time = '90 days',
+        outcome_pct = outcome_pct %>% as.numeric()
+      ) %>% 
+      rename(outcome_gos = gos_90d),
+  ) %>% 
+    mutate(
+      outcome_time = outcome_time %>% factor(c('30 days', '90 days')),
+      hdi_tier = hdi_tier %>% factor(c('Low Human Development', 'Medium Human Development', 'High Human Development', 'Very High Human Development'))
+    ) %>% 
+    arrange(outcome_gos, hdi_tier),
+  aes(
+    x = outcome_time,
+    y = outcome_pct,
+    fill = outcome_gos
+  )
+) + 
+  geom_col(width = 0.25, color = 'black') +
+  geom_flow(
+    aes(alluvium = outcome_gos),
+    color = 'black',
+    curve_type = 'linear',
+    width = 0.25
+  ) +
+  geom_label(
+    aes(
+      label = case_when(
+        outcome_pct != 0 & outcome_pct > 0.06 ~ scales::percent(outcome_pct, accuracy = 0.1)
+      ),
+      color = 'blue'
+    ),
+    family = font,
+    show.legend = FALSE,
+    position = position_fill(vjust = 0.5)) +
+  theme_jgn() + 
+  theme(
+    legend.position = 'right'
+  ) +
+  scale_fill_lancet() +
+  scale_color_manual(name = 'color', values = c('#FFF')) +
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(
+    x = 'Outcome Assessment Time',
+    y = 'Percent',
+    fill = 'Glasgow Outcome Scale'
+  ) + 
+  facet_grid(.~hdi_tier)
+```
+
+:::
+
+## Figure 4
+
+```{r}
+#| label: fig-4_mortality-at-discharge-forest-plot
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from an inverse probability weighted multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at hospital discharge using country, institution, data collection start year, and data collection start week as random effects.
+#| fig-width: 14
+#| fig-height: 10
+
+mortality_discharge_model %>% 
+  jgn_forest_model()
+```
+
+## Supplementary Figure 2
+
+```{r}
+#| label: fig-supp-2_patient-enrollment-by-country-map
+#| fig-cap: Geographic distribution of all patients enrolled in the Global Neurosurgical Study 1 (GNS-I).
+#| fig-width: 12
+
+ggplot(
+  data = world_sf,
+  aes(
+    fill = patients_enrolled
+  )
+) + 
+  geom_sf() + 
+  theme_jgn() + 
+  scale_fill_viridis_c(
+    na.value = '#DDD',
+    guide = guide_colorbar(
+      reverse = TRUE,
+      position = 'inside',
+      direction = 'vertical'
+    )
+  ) + 
+  theme(
+    panel.background = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position.inside = c(0.17, 0.24),
+    legend.title = element_text(size = rel(0.75), face = 'bold'),
+    legend.text = element_text(size = rel(0.75)),
+    legend.box.background = element_rect(color = 'black'),
+    legend.key.height = unit(0.5, 'cm'),
+    legend.key.width = unit(0.5, 'cm')
+  ) +
+  labs(
+    fill = 'Number of Patients Enrolled'
+  )
+```
+
+## Supplementary Figure 3
+
+```{r}
+#| label: fig-supp-3_alluvial-gos
+#| fig-cap: Alluvial plot comparing Glasgow Outcome Scale scores at 30-days and 90-days post-injury.
+#| fig-width: 8
+#| fig-height: 6
+
+ggplot(
+  data = bind_rows(
+    gns %>% 
+      filter(!is.na(gos_30d) & !is.na(gos_90d)) %>% 
+      select(record_id, gos_30d) %>% 
+      tabyl(gos_30d) %>% 
+      pivot_longer(!one_of('n','gos_30d'), names_to = 'outcome_time', values_to = 'outcome_pct') %>% 
+      mutate(
+        outcome_time = '30 days',
+        outcome_pct = outcome_pct %>% as.numeric()
+      ) %>% 
+      rename(outcome_gos = gos_30d),
+    gns %>% 
+      filter(!is.na(gos_30d) & !is.na(gos_90d)) %>% 
+      select(record_id, gos_90d) %>% 
+      tabyl(gos_90d) %>% 
+      pivot_longer(!one_of('n', 'gos_90d'), names_to = 'outcome_time', values_to = 'outcome_pct') %>% 
+      mutate(
+        outcome_time = '90 days',
+        outcome_pct = outcome_pct %>% as.numeric()
+      ) %>% 
+      rename(outcome_gos = gos_90d)
+  ) %>% 
+    mutate(outcome_time = outcome_time %>% factor(c('30 days', '90 days'))) %>% 
+    relocate(n, .before = outcome_pct) %>% 
+    arrange(outcome_gos),
+  aes(
+    x = outcome_time,
+    y = outcome_pct,
+    fill = outcome_gos
+  )
+) + 
+  geom_col(width = 0.25, color = 'black') +
+  geom_flow(
+    aes(alluvium = outcome_gos),
+    color = 'black',
+    curve_type = 'linear',
+    width = 0.25
+  ) +
+  geom_label(
+  	aes(
+  		label = case_when(
+  			outcome_pct != 0 & outcome_pct > 0.06 ~ scales::percent(outcome_pct, accuracy = 0.1)
+  		),
+  		color = 'blue'
+  	),
+  	family = font,
+  	show.legend = FALSE,
+  	position = position_fill(vjust = 0.5)) +
+  theme_jgn() + 
+  theme(
+    legend.position = 'right'
+  ) +
+  scale_fill_lancet() +
+  scale_color_manual(name = 'color', values = c('#FFF')) +
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(
+    x = 'Outcome Assessment Time',
+    y = 'Percent',
+    fill = 'Glasgow Outcome Scale'
+  )
+```
+
+## Supplementary Figure 5
+
+```{r}
+#| label: fig-supp-5_mortality-at-discharge-model-calibration
+#| fig-cap: Calibration curve for mortality at hospital discharge model comparing predicted and empirical probabilities with n=10 equally-sized probabilistic risk strata with bootstrapped 95% confidence intervals.
+#| fig-height: 7
+
+plot_data <- mortality_discharge_model %>% 
+  get_data() %>% 
+  mutate(
+    predicted_prob = predict(mortality_discharge_model, type = 'response'),
+    outcome = mortality_discharge_model %>% get_response() %>% as.numeric() %>% -1
+  )
+
+calibration_plot <- plot_data %>% 
+  ggplot(
+    aes(
+      x = predicted_prob,
+      y = outcome
+    )
+  ) + 
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 'longdash',
+    color = pal_nejm()(2)[1]
+  ) +
+  geom_smooth(
+    method = 'loess',
+    se = FALSE,
+    fill = pal_nejm()(2)[2],
+    color = 'black',
+    linewidth = 0.5,
+    alpha = 0.15,
+    span = 0.25
+  ) +
+  geom_ribbon(
+    data = loess(
+      outcome ~ predicted_prob,
+      data = plot_data,
+      span = 0.25
+    ) %>% 
+      augment(se_fit = TRUE),
+    aes(
+      ymin = .fitted - qnorm(0.975)*.se.fit,
+      ymax = .fitted + qnorm(0.975)*.se.fit
+    ),
+    color = 'gray',
+    fill = pal_nejm()(2)[2],
+    alpha = 0.15
+  ) +
+  labs(
+    # x = 'Predicted Probability',
+    x = element_blank(),
+    y = 'Empirical Probability'
+  ) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1))
+
+rug_plot <- ggplot(
+  data = plot_data %>% 
+    filter(
+      outcome == 0
+    ),
+  aes(
+    x = predicted_prob
+  )
+) + 
+  geom_histogram(
+    aes(
+      y = after_stat(density)
+    ),
+    fill = pal_npg()(2)[2],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  geom_histogram(
+    data = plot_data %>% 
+      filter(
+        outcome == 1
+      ),
+    aes(
+      y = -after_stat(density)
+    ),
+    fill = pal_npg()(2)[1],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  theme_jgn() +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(labels = function(x) abs(x)) +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Density'
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 5))
+  )
+
+cowplot::plot_grid(
+  calibration_plot,
+  rug_plot,
+  align = 'v',
+  ncol = 1,
+  rel_heights = c(0.6, 0.4)
+)
+```
+
+## Supplementary Figure 6
+
+::: {.panel-tabset}
+
+### Supplementary Figure 6a
+
+```{r}
+#| label: fig-supp-6a_mortality-at-discharge-model-AUROC
+#| fig-cap: Mortality at hospital discharge model discriminative ability measured by Area Under the Receiver Operating Characteristic Curve (AUROC) with 95% Confidence Intervals generated using 2000 stratified bootstrap replicates[@carpenter2000a].
+
+roc(
+  response = mortality_discharge_model %>% get_response(),
+  predictor = predict(mortality_discharge_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggroc()
+```
+
+### Supplementary Figure 5b
+
+```{r}
+#| label: fig-supp-6b_mortality-at-discharge-model-AUPRC
+#| fig-cap: Mortality at hospital discharge model discriminative ability measured by Area Under the Precision Recall Curve (AUPRC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates[@carpenter2000a].
+
+roc(
+  response = mortality_discharge_model %>% get_response(),
+  predictor = predict(mortality_discharge_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggprc()
+```
+
+:::
+
+## Supplementary Figure 7
+
+```{r}
+#| label: fig-supp-7_lasting-medical-complications-forest-plot
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from a multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with lasting medical complications using country, institution, data collection start year, and data collection start week as random effects.
+#| fig-width: 14
+#| fig-height: 10
+
+lasting_complications_model %>% 
+  jgn_forest_model()
+```
+
+## Supplementary Figure 8
+
+```{r}
+#| label: fig-supp-8_mortality-at-90-days-forest-plot
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from a multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at 90 days using country, institution, data collection start year, and data collection start week as random effects.
+#| fig-width: 14
+#| fig-height: 10
+
+mortality_90d_model %>% 
+  jgn_forest_model()
+```
+
+## Supplementary Figure 9
+
+::: {.panel-tabset}
+
+### Supplementary Figure 9a
+
+```{r}
+#| label: fig-supp-9a_sensitivity-analysis-highest-contributing-country-excluded
+#| fig-cap: Sensitivity analysis for the final mortality at hospital discharge mixed effects logistic regression analysis with the highest contributing country for each HDI tier excluded.
+#| fig-width: 14
+#| fig-height: 10
+
+highest_country_contributor <- gns %>%
+  group_by(hdi_tier, country) %>%
+  summarise(records = n()) %>% 
+  slice_max(records, n = 1, with_ties = FALSE) %>%
+  arrange(hdi_tier, country, desc(records)) %>% 
+  pull(country) %>% 
+  as.character()
+
+glmer(
+  mortality_discharge ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_discharge ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all) %>% 
+    filter(!country %in% highest_country_contributor),
+  weights = ipw,
+  family = 'binomial'
+) %>% 
+  jgn_forest_model()
+```
+
+### Supplementary Figure 9b
+
+```{r}
+#| label: fig-supp-9b_ensitivity-analysis-highest-contributing-center-excluded
+#| fig-cap: Sensitivity analysis for the final mortality at hospital discharge mixed effects logistic regression analysis with the highest contributing center for each HDI tier excluded.
+#| fig-width: 14
+#| fig-height: 10
+
+highest_center_contributor <- gns %>%
+  group_by(hdi_tier, institution) %>%
+  summarise(records = n()) %>% 
+  slice_max(records, n = 1, with_ties = FALSE) %>%
+  arrange(hdi_tier, institution, desc(records)) %>% 
+  pull(institution) %>% 
+  as.character()
+
+glmer(
+  mortality_discharge ~ hdi_tier + age_at_injury + sex + gcs_24h_numeric + pre_injury_asa + mechanical_ventilation + pupil_reactivity + mean_years_schooling_log + gini_index + (1|country) + (1|institution) + (1|collection_period_start_year) + (1|collection_period_start_week),
+  data = recipe(mortality_discharge ~ ., data = gns_weights_all) %>% 
+    step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>% 
+    prep() %>% 
+    juice() %>% 
+    copy_labels_from(gns_weights_all) %>% 
+    filter(!institution %in% highest_center_contributor),
+  weights = ipw,
+  family = 'binomial'
+) %>% 
+  jgn_forest_model()
+```
+
+:::
+
+:::
+
+# Final Outcome Regression Models
+
+::: {.panel-tabset}
+
+## Mortality at Discharge
+
+::: {.panel-tabset}
+
+### Forest Plot
+
+```{r}
+#| label: fig-mortality_discharge_forest
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from a multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at hospital discharge.
+#| fig-width: 14
+#| fig-height: 10
+
+mortality_discharge_model %>% 
+  jgn_forest_model()
+```
+
+### Summary Table
+
+```{r}
+#| label: tbl-mortality_discharge_summary
+#| tbl-cap: Multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at hospital discharge.
+
+mortality_discharge_model %>% 
+  print_kable_gtsummary(add_events_n = FALSE, hide_n_percent_col = TRUE, ci_delim = '–') %>% 
+  tab_footnote(html('<em><strong>Abbreviations</strong>: HDI = Human Development Index; TBI = Traumatic Brain Injury; GCS = Glasgow Coma Scale; ASA-PS = American Society of Anesthesiologists Physical Classification System.</em>'))
+```
+
+### Model Diagnostics
+
+::: {.panel-tabset}
+
+#### Model Performance
+
+```{r}
+#| label: tbl-mortality_discharge_performance
+#| tbl-cap: Indices of mortality at hospital discharge multivariable mixed effects logistic regression model performance.
+
+mortality_discharge_model %>% 
+  performance() %>% 
+  select(AIC:Log_loss) %>% 
+  rename(
+    `Conditional R<sup>2</sup>` = R2_conditional,
+    `Marginal R<sup>2</sup>` = R2_marginal
+  ) %>% 
+  print_kable() %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AIC</strong>: Akaike\'s Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = AIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AICc</strong>: Second-order (or small sample) AIC with a correction for small sample sizes.'
+   ),
+   locations = cells_column_labels(columns = AICc)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>BIC</strong>: Bayesian Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = BIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Conditional R<sup>2</sup></strong>: The conditional R<sup>2</sup> takes both the fixed and random effects into account (i.e., the total model).',
+   ),
+   locations = cells_column_labels(columns = `Conditional R<sup>2</sup>`)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Marginal R<sup>2</sup></strong>: The marginal R<sup>2</sup> considers only the variance of the fixed effects (without the random effects).',
+   ),
+   locations = cells_column_labels(columns = `Marginal R<sup>2</sup>` )
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>ICC</strong>: Intraclass Correlation Coefficient.',
+   ),
+   locations = cells_column_labels(columns = ICC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>RMSE</strong>: Root Mean Squared Error.',
+   ),
+   locations = cells_column_labels(columns = RMSE)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Sigma</strong>: Residual standard deviation.',
+   ),
+   locations = cells_column_labels(columns = Sigma)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Log Loss</strong>: Mean log loss.',
+   ),
+   locations = cells_column_labels(columns = Log_loss)
+  ) %>% 
+  opt_footnote_marks(marks = 'extended') %>% 
+  fmt_number(decimals = 3)
+```
+
+#### Multicollinearity Assessment
+
+:::{.callout-warning icon="false"}
+
+##### Moderate Correlation
+
+:::
+
+```{r}
+#| label: tbl-mortality_discharge_VIF
+#| tbl-cap: The variance inflation factor (VIF) is a measure to analyze the magnitude of multicollinearity of model terms. A VIF of less than 5 indicates a low correlation of that predictor with other predictors. A value between 5 and 10 indicates a moderate correlation, while VIF values larger than 10 are a sign of a high, non-tolerable correlation of model predictors.
+
+mortality_discharge_model %>% 
+  printVIF_easystats()
+```
+
+#### Calibration Plot
+
+```{r}
+#| label: fig-mortality_discharge_calibration
+#| fig-height: 7
+#| fig-cap: Calibration curve for mortality at hospital discharge model comparing predicted and empirical probabilities with $n=10$ equally-sized probabilistic risk strata with bootstrapped 95% confidence intervals.
+
+plot_data <- mortality_discharge_model %>% 
+  get_data() %>% 
+  mutate(
+    predicted_prob = predict(mortality_discharge_model, type = 'response'),
+    outcome = mortality_discharge_model %>% get_response() %>% as.numeric() %>% -1
+  )
+
+calibration_plot <- plot_data %>% 
+  ggplot(
+    aes(
+      x = predicted_prob,
+      y = outcome
+    )
+  ) + 
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 'longdash',
+    color = pal_nejm()(2)[1]
+  ) +
+  geom_smooth(
+    method = 'loess',
+    se = FALSE,
+    fill = pal_nejm()(2)[2],
+    color = 'black',
+    linewidth = 0.5,
+    alpha = 0.15,
+    span = 0.25
+  ) +
+  geom_ribbon(
+    data = loess(
+      outcome ~ predicted_prob,
+      data = plot_data,
+      span = 0.25
+    ) %>% 
+      augment(se_fit = TRUE),
+    aes(
+      ymin = .fitted - qnorm(0.975)*.se.fit,
+      ymax = .fitted + qnorm(0.975)*.se.fit
+    ),
+    color = 'gray',
+    fill = pal_nejm()(2)[2],
+    alpha = 0.15
+  ) +
+  labs(
+    # x = 'Predicted Probability',
+    x = element_blank(),
+    y = 'Empirical Probability'
+  ) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1))
+
+rug_plot <- ggplot(
+  data = plot_data %>% 
+    filter(
+      outcome == 0
+    ),
+  aes(
+    x = predicted_prob
+  )
+) + 
+  geom_histogram(
+    aes(
+      y = after_stat(density)
+    ),
+    fill = pal_npg()(2)[2],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  geom_histogram(
+    data = plot_data %>% 
+      filter(
+        outcome == 1
+      ),
+    aes(
+      y = -after_stat(density)
+    ),
+    fill = pal_npg()(2)[1],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  theme_jgn() +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(labels = function(x) abs(x)) +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Density'
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 5))
+  )
+
+cowplot::plot_grid(
+  calibration_plot,
+  rug_plot,
+  align = 'v',
+  ncol = 1,
+  rel_heights = c(0.6, 0.4)
+)
+```
+
+#### AUROC
+
+```{r}
+#| label: fig-mortality_discharge_auroc
+#| fig-cap: Mortality at hospital discharge model discriminative ability measured by the Area Under the Receiver Operating Characteristic Curve (AUROC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = mortality_discharge_model %>% get_response(),
+  predictor = predict(mortality_discharge_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggroc()
+```
+
+#### AUPRC
+
+```{r}
+#| label: fig-mortality_discharge_auprc
+#| fig-cap: Mortality at hospital discharge model discriminative ability measured by the Area Under the Precision Recall Curve (AUPRC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = mortality_discharge_model %>% get_response(),
+  predictor = predict(mortality_discharge_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggprc()
+```
+
+#### Model Assumption Validation
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Assess for over- and under-disperion of generalized linear (mixed) models
+
+```{r}
+mortality_discharge_model_unweighted %>% 
+  check_overdispersion(allow.new.levels = TRUE)
+```
+
+:::
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Assess for uniformity of simulated residuals
+
+```{r}
+mortality_discharge_model_unweighted %>% 
+  check_residuals(allow.new.levels = TRUE)
+```
+
+:::
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Check mixed models for boundary fits
+
+```{r}
+mortality_discharge_model %>% 
+  print_singularity_check()
+```
+
+:::
+
+:::
+
+### Diagnostic Plots
+
+:::{.callout-note appearance="simple"}
+
+Right-click on the image and choose "**Open Image in New Tab**" to see the full resolution.
+
+:::
+
+```{r}
+#| label: fig-mortality_discharge-model_check
+#| fig-cap: Visual checks of mortality at hospital discharge model diagnostics and assumptions, including multicollinearity, and normality of random effects.
+#| fig-width: 18
+#| fig-height: 14
+
+mortality_discharge_model %>% 
+  check_model(
+    check = c(
+      'vif',
+      'qq',
+      'reqq'
+    )
+  )
+```
+
+:::
+
+## Lasting Medical Complications
+
+::: {.panel-tabset}
+
+### Forest Plot
+
+```{r}
+#| label: fig-lasting_complications_forest
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from a multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with lasting medical complications.
+#| fig-width: 12
+#| fig-height: 10
+
+lasting_complications_model %>% 
+  jgn_forest_model()
+```
+
+### Summary Table
+
+```{r}
+#| label: tbl-lasting_complications_summary
+#| tbl-cap: Multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with lasting medical complications.
+
+lasting_complications_model %>% 
+  print_kable_gtsummary(add_events_n = FALSE, hide_n_percent_col = TRUE, ci_delim = '–') %>% 
+  tab_footnote(html('<em><strong>Abbreviations</strong>: HDI = Human Development Index; TBI = Traumatic Brain Injury; GCS = Glasgow Coma Scale; ASA-PS = American Society of Anesthesiologists Physical Classification System.</em>'))
+```
+
+### Model Diagnostics
+
+::: {.panel-tabset}
+
+#### Model Performance
+
+```{r}
+#| label: tbl-lasting_complications_performance
+#| tbl-cap: Indices of lasting medical complications multivariable mixed effects logistic regression model performance.
+
+lasting_complications_model %>% 
+  performance() %>% 
+  select(AIC:Log_loss) %>% 
+  rename(
+    `Conditional R<sup>2</sup>` = R2_conditional,
+    `Marginal R<sup>2</sup>` = R2_marginal
+  ) %>% 
+  print_kable() %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AIC</strong>: Akaike\'s Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = AIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AICc</strong>: Second-order (or small sample) AIC with a correction for small sample sizes.'
+   ),
+   locations = cells_column_labels(columns = AICc)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>BIC</strong>: Bayesian Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = BIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Conditional R<sup>2</sup></strong>: The conditional R<sup>2</sup> takes both the fixed and random effects into account (i.e., the total model).',
+   ),
+   locations = cells_column_labels(columns = `Conditional R<sup>2</sup>`)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Marginal R<sup>2</sup></strong>: The marginal R<sup>2</sup> considers only the variance of the fixed effects (without the random effects).',
+   ),
+   locations = cells_column_labels(columns = `Marginal R<sup>2</sup>` )
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>ICC</strong>: Intraclass Correlation Coefficient.',
+   ),
+   locations = cells_column_labels(columns = ICC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>RMSE</strong>: Root Mean Squared Error.',
+   ),
+   locations = cells_column_labels(columns = RMSE)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Sigma</strong>: Residual standard deviation.',
+   ),
+   locations = cells_column_labels(columns = Sigma)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Log Loss</strong>: Mean log loss.',
+   ),
+   locations = cells_column_labels(columns = Log_loss)
+  ) %>% 
+  opt_footnote_marks(marks = 'extended') %>% 
+  fmt_number(decimals = 3)
+```
+
+#### Multicollinearity Assessment
+
+:::{.callout-tip icon="false"}
+
+##### Low Correlation
+
+:::
+
+```{r}
+#| label: tbl-lasting_complications_VIF
+#| tbl-cap: The variance inflation factor (VIF) is a measure to analyze the magnitude of multicollinearity of model terms. A VIF of less than 5 indicates a low correlation of that predictor with other predictors. A value between 5 and 10 indicates a moderate correlation, while VIF values larger than 10 are a sign of a high, non-tolerable correlation of model predictors.
+
+lasting_complications_model %>% 
+  printVIF_easystats()
+```
+
+#### Calibration Plot
+
+```{r}
+#| label: fig-lasting_complications_calibration
+#| fig-height: 7
+#| fig-cap: Calibration curve for lasting medical complications model comparing predicted and empirical probabilities with $n=10$ equally-sized probabilistic risk strata with bootstrapped 95% confidence intervals.
+
+plot_data <- lasting_complications_model %>% 
+  get_data() %>% 
+  mutate(
+    predicted_prob = predict(lasting_complications_model, type = 'response'),
+    outcome = lasting_complications_model %>% get_response() %>% as.numeric() %>% -1
+  )
+
+calibration_plot <- plot_data %>% 
+  ggplot(
+    aes(
+      x = predicted_prob,
+      y = outcome
+    )
+  ) + 
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 'longdash',
+    color = pal_nejm()(2)[1]
+  ) +
+  geom_smooth(
+    method = 'loess',
+    se = FALSE,
+    fill = pal_nejm()(2)[2],
+    color = 'black',
+    linewidth = 0.5,
+    alpha = 0.15,
+    span = 0.25
+  ) +
+  geom_ribbon(
+    data = loess(
+      outcome ~ predicted_prob,
+      data = plot_data,
+      span = 0.25
+    ) %>% 
+      augment(se_fit = TRUE),
+    aes(
+      ymin = .fitted - qnorm(0.975)*.se.fit,
+      ymax = .fitted + qnorm(0.975)*.se.fit
+    ),
+    color = 'gray',
+    fill = pal_nejm()(2)[2],
+    alpha = 0.15
+  ) +
+  labs(
+    # x = 'Predicted Probability',
+    x = element_blank(),
+    y = 'Empirical Probability'
+  ) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1))
+
+rug_plot <- ggplot(
+  data = plot_data %>% 
+    filter(
+      outcome == 0
+    ),
+  aes(
+    x = predicted_prob
+  )
+) + 
+  geom_histogram(
+    aes(
+      y = after_stat(density)
+    ),
+    fill = pal_npg()(2)[2],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  geom_histogram(
+    data = plot_data %>% 
+      filter(
+        outcome == 1
+      ),
+    aes(
+      y = -after_stat(density)
+    ),
+    fill = pal_npg()(2)[1],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  theme_jgn() +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(labels = function(x) abs(x)) +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Density'
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 5))
+  )
+
+cowplot::plot_grid(
+  calibration_plot,
+  rug_plot,
+  align = 'v',
+  ncol = 1,
+  rel_heights = c(0.6, 0.4)
+)
+```
+
+#### AUROC
+
+```{r}
+#| label: fig-lasting_complications_auroc
+#| fig-cap: lasting medical complications model discriminative ability measured by the Area Under the Receiver Operating Characteristic Curve (AUROC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = lasting_complications_model %>% get_response(),
+  predictor = predict(lasting_complications_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggroc()
+```
+
+#### AUPRC
+
+```{r}
+#| label: fig-lasting_complications_auprc
+#| fig-cap: lasting medical complications model discriminative ability measured by the Area Under the Precision Recall Curve (AUPRC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = lasting_complications_model %>% get_response(),
+  predictor = predict(lasting_complications_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggprc()
+```
+
+#### Model Assumption Validation
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Assess for over- and under-disperion of generalized linear (mixed) models
+
+```{r}
+lasting_complications_model_unweighted %>% 
+  check_overdispersion(allow.new.levels = TRUE)
+```
+
+:::
+
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Check mixed models for boundary fits
+
+```{r}
+lasting_complications_model %>% 
+  print_singularity_check()
+```
+
+:::
+
+:::
+
+### Diagnostic Plots
+
+:::{.callout-note appearance="simple"}
+
+Right-click on the image and choose "**Open Image in New Tab**" to see the full resolution.
+
+:::
+
+```{r}
+#| label: fig-lasting_complications-model_check
+#| fig-cap: Visual checks of lasting medical complications model diagnostics and assumptions, including multicollinearity, and normality of random effects.
+#| fig-width: 18
+#| fig-height: 14
+
+lasting_complications_model %>% 
+  check_model(
+    check = c(
+      'vif',
+      'qq',
+      'reqq'
+    )
+  )
+```
+
+:::
+## Mortality at 90 days
+
+::: {.panel-tabset}
+
+### Forest Plot
+
+```{r}
+#| label: fig-mortality_90d_forest
+#| fig-cap: Forest plot demonstrating odds ratios (ORs) from a multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at 90 days.
+#| fig-width: 14
+#| fig-height: 10
+
+mortality_90d_model %>% 
+  jgn_forest_model()
+```
+
+### Summary Table
+
+```{r}
+#| label: tbl-mortality_90d_summary
+#| tbl-cap: Multivariable mixed effects logistic regression analysis for demographic, pre-hospital, medical evaluation, management, and socioeconomic characteristics associated with mortality at 90 days.
+
+mortality_90d_model %>% 
+  print_kable_gtsummary(add_events_n = FALSE, hide_n_percent_col = TRUE, ci_delim = '–') %>% 
+  tab_footnote(html('<em><strong>Abbreviations</strong>: HDI = Human Development Index; TBI = Traumatic Brain Injury; GCS = Glasgow Coma Scale; ASA-PS = American Society of Anesthesiologists Physical Classification System.</em>'))
+```
+
+### Model Diagnostics
+
+::: {.panel-tabset}
+
+#### Model Performance
+
+```{r}
+#| label: tbl-mortality_90d_performance
+#| tbl-cap: Indices of mortality at 90 days multivariable mixed effects logistic regression model performance.
+
+mortality_90d_model %>% 
+  performance() %>% 
+  select(AIC:Log_loss) %>% 
+  rename(
+    `Conditional R<sup>2</sup>` = R2_conditional,
+    `Marginal R<sup>2</sup>` = R2_marginal
+  ) %>% 
+  print_kable() %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AIC</strong>: Akaike\'s Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = AIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>AICc</strong>: Second-order (or small sample) AIC with a correction for small sample sizes.'
+   ),
+   locations = cells_column_labels(columns = AICc)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>BIC</strong>: Bayesian Information Criterion.',
+   ),
+   locations = cells_column_labels(columns = BIC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Conditional R<sup>2</sup></strong>: The conditional R<sup>2</sup> takes both the fixed and random effects into account (i.e., the total model).',
+   ),
+   locations = cells_column_labels(columns = `Conditional R<sup>2</sup>`)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Marginal R<sup>2</sup></strong>: The marginal R<sup>2</sup> considers only the variance of the fixed effects (without the random effects).',
+   ),
+   locations = cells_column_labels(columns = `Marginal R<sup>2</sup>` )
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>ICC</strong>: Intraclass Correlation Coefficient.',
+   ),
+   locations = cells_column_labels(columns = ICC)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>RMSE</strong>: Root Mean Squared Error.',
+   ),
+   locations = cells_column_labels(columns = RMSE)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Sigma</strong>: Residual standard deviation.',
+   ),
+   locations = cells_column_labels(columns = Sigma)
+  ) %>% 
+  tab_footnote(
+   footnote = gt::html(
+      '<strong>Log Loss</strong>: Mean log loss.',
+   ),
+   locations = cells_column_labels(columns = Log_loss)
+  ) %>% 
+  opt_footnote_marks(marks = 'extended') %>% 
+  fmt_number(decimals = 3)
+```
+
+#### Multicollinearity Assessment
+
+:::{.callout-warning icon="false"}
+
+##### Moderate Correlation
+
+:::
+
+```{r}
+#| label: tbl-mortality_90d_VIF
+#| tbl-cap: The variance inflation factor (VIF) is a measure to analyze the magnitude of multicollinearity of model terms. A VIF of less than 5 indicates a low correlation of that predictor with other predictors. A value between 5 and 10 indicates a moderate correlation, while VIF values larger than 10 are a sign of a high, non-tolerable correlation of model predictors.
+
+mortality_90d_model %>% 
+  printVIF_easystats()
+```
+
+#### Calibration Plot
+
+```{r}
+#| label: fig-mortality_90d_calibration
+#| fig-height: 7
+#| fig-cap: Calibration curve for mortality at 90 days model comparing predicted and empirical probabilities with $n=10$ equally-sized probabilistic risk strata with bootstrapped 95% confidence intervals.
+
+plot_data <- mortality_90d_model %>% 
+  get_data() %>% 
+  mutate(
+    predicted_prob = predict(mortality_90d_model, type = 'response'),
+    outcome = mortality_90d_model %>% get_response() %>% as.numeric() %>% -1
+  )
+
+calibration_plot <- plot_data %>% 
+  ggplot(
+    aes(
+      x = predicted_prob,
+      y = outcome
+    )
+  ) + 
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = 'longdash',
+    color = pal_nejm()(2)[1]
+  ) +
+  geom_smooth(
+    method = 'loess',
+    se = FALSE,
+    fill = pal_nejm()(2)[2],
+    color = 'black',
+    linewidth = 0.5,
+    alpha = 0.15,
+    span = 0.25
+  ) +
+  geom_ribbon(
+    data = loess(
+      outcome ~ predicted_prob,
+      data = plot_data,
+      span = 0.25
+    ) %>% 
+      augment(se_fit = TRUE),
+    aes(
+      ymin = .fitted - qnorm(0.975)*.se.fit,
+      ymax = .fitted + qnorm(0.975)*.se.fit
+    ),
+    color = 'gray',
+    fill = pal_nejm()(2)[2],
+    alpha = 0.15
+  ) +
+  labs(
+    # x = 'Predicted Probability',
+    x = element_blank(),
+    y = 'Empirical Probability'
+  ) +
+  scale_x_continuous(breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1))
+
+rug_plot <- ggplot(
+  data = plot_data %>% 
+    filter(
+      outcome == 0
+    ),
+  aes(
+    x = predicted_prob
+  )
+) + 
+  geom_histogram(
+    aes(
+      y = after_stat(density)
+    ),
+    fill = pal_npg()(2)[2],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  geom_histogram(
+    data = plot_data %>% 
+      filter(
+        outcome == 1
+      ),
+    aes(
+      y = -after_stat(density)
+    ),
+    fill = pal_npg()(2)[1],
+    color = 'black',
+    alpha = 0.75,
+    bins = 100
+  ) + 
+  theme_jgn() +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_y_continuous(labels = function(x) abs(x)) +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Density'
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 5))
+  )
+
+cowplot::plot_grid(
+  calibration_plot,
+  rug_plot,
+  align = 'v',
+  ncol = 1,
+  rel_heights = c(0.6, 0.4)
+)
+```
+
+#### AUROC
+
+```{r}
+#| label: fig-mortality_90d_auroc
+#| fig-cap: Mortality at 90 days model discriminative ability measured by the Area Under the Receiver Operating Characteristic Curve (AUROC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = mortality_90d_model %>% get_response(),
+  predictor = predict(mortality_90d_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggroc()
+```
+
+#### AUPRC
+
+```{r}
+#| label: fig-mortality_90d_auprc
+#| fig-cap: Mortality at 90 days model discriminative ability measured by the Area Under the Precision Recall Curve (AUPRC) with 95% Confidence Intervals using 2000 stratified bootstrap replicates.
+
+roc(
+  response = mortality_90d_model %>% get_response(),
+  predictor = predict(mortality_90d_model, type = 'response'),
+  ci = TRUE
+) %>%
+  jggprc()
+```
+
+#### Model Assumption Validation
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Assess for over- and under-disperion of generalized linear (mixed) models
+
+```{r}
+mortality_90d_model_unweighted %>% 
+  check_overdispersion(allow.new.levels = TRUE)
+```
+
+:::
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Assess for uniformity of simulated residuals
+
+```{r}
+mortality_90d_model_unweighted %>% 
+  check_residuals(allow.new.levels = TRUE)
+```
+
+:::
+
+:::{.callout-tip collapse="false" icon="false"}
+
+##### Check mixed models for boundary fits
+
+```{r}
+mortality_90d_model %>% 
+  print_singularity_check()
+```
+
+:::
+
+:::
+
+### Diagnostic Plots
+
+:::{.callout-note appearance="simple"}
+
+Right-click on the image and choose "**Open Image in New Tab**" to see the full resolution.
+
+:::
+
+```{r}
+#| label: fig-mortality_90d-model_check
+#| fig-cap: Visual checks of mortality at 90 days model diagnostics and assumptions, including multicollinearity, and normality of random effects.
+#| fig-width: 18
+#| fig-height: 14
+
+mortality_90d_model %>% 
+  check_model(
+    check = c(
+      'vif',
+      'qq',
+      'reqq'
+    )
+  )
+```
+
+:::
+
+:::
+
+***
+
+:::{.callout-note .raw-code collapse="true" icon=false}
+
+# `R` Session Information
+
+```{r}
+jgntools::print_session_info()
+```
+
+:::
+
+# References

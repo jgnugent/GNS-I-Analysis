@@ -1,0 +1,1084 @@
+---
+title: "GNS-I: Gradient Boosted Modeling, Feature Selection & Hyperparameter Tuning"
+date: June 14, 2026
+author:
+  - name: Joseph G. Nugent, MD, MPH, MHS, CPH
+    orcid: 0000-0002-6863-4523
+    email: nugentj@ohsu.edu
+execute:
+  echo: true
+  warning: false
+format:
+  html:
+    anchor-sections: false
+    cap-location: top
+    citations-hover: true
+    code-copy: true
+    code-fold: true
+    code-line-numbers: true
+    code-overflow: wrap
+    code-tools: true
+    crossref:
+      fig-title: '<strong>Figure'
+      tbl-title: '<strong>Table'
+      title-delim: '</strong>:'
+    css: /Users/JosephNugent/GitHub/quarto/_includes/styles.css
+    df-print: paged
+    embed-resources: true
+    fig-align: center
+    fig-width: 8
+    fontsize: 17px
+    html-math-method: katex
+    link-external-icon: true
+    link-external-newwindow: true
+    mainfont: EB Garamond
+    number-sections: false
+    page-layout: full
+    theme:
+      - default
+      - /Users/JosephNugent/GitHub/quarto/_includes/custom.scss
+    toc: true
+    toc-title: Contents
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(easystats)
+librarian::shelf(
+  finetune,
+  jgntools,
+  tidymodels,
+  tidyverse,
+  xgboost
+)
+```
+
+```{r}
+#| label: Define functions
+
+theme_set(theme_jgn())
+
+# Disable scientific notation
+options(scipen = 999)
+options(knitr.table.format = 'html')
+#options(knitr.table.format = 'pipe')
+options(knitr.kable.NA = '')
+
+jgntools::resolve_conflicts()
+
+sysfonts::font_add_google('EB Garamond')
+
+font <- 'EB Garamond'
+
+jgn_xgboost_cleanup <- function(prefix = NA){
+  if(is.na(prefix)){
+  	stop('`prefix` is required to proceed.')
+  }
+
+	variables <- c(
+	  'outcome',
+    'outcome_prevalence',
+    # 'cv_folds_display',
+	  'xgboost_best_overall',
+    'xgboost_data',
+    'xgboost_data_split',
+    'xgboost_data_test',
+    'xgboost_data_train',
+    'xgboost_final_model',
+    'xgboost_final_recipe',
+    'xgboost_final_workflow_production',
+    'xgboost_grid',
+    'xgboost_last_fit',
+    'xgboost_metrics',
+    'xgboost_nested_results',
+    'xgboost_outer_folds',
+    'xgboost_outer_metrics',
+    'xgboost_predictions',
+    'xgboost_recipe',
+    'xgboost_roc',
+    'xgboost_roc_coords',
+    'xgboost_roc_coords_ci',
+    'xgboost_shap',
+    'xgboost_shap_x',
+    'xgboost_spec',
+    'xgboost_workflow'
+  )
+
+  if(exists('gamma_parameter')){
+    variables <- c(
+      'gamma_parameter',
+      variables
+    )
+  }
+
+  if(exists('num_trees')){
+    variables <- c(
+      'num_trees',
+      variables
+    )
+  }
+
+  walk(
+    variables,
+    ~assign(paste0(prefix, '_', .x), get(.x), get(.x), envir = .GlobalEnv)
+  )
+
+  rm(list = variables, envir = .GlobalEnv)
+}
+```
+
+```{r}
+#| label: Load Stored Dataset Objects
+
+load('./GNS-I_Analytic Dataset.RData')
+```
+
+# Outcome `xgboost` Hyperparameter Tuning
+
+::: {.panel-tabset}
+
+## Lasting Medical Complications
+
+::: {.panel-tabset}
+
+```{r}
+#| label: lasting_complications specification
+
+xgboost_data <- gns %>%
+  filter(!is.na(lasting_complications))
+
+set.seed(42)
+xgboost_data_split <- initial_split(
+  xgboost_data,
+  strata = lasting_complications
+)
+xgboost_data_train <- training(xgboost_data_split)
+xgboost_data_test <- testing(xgboost_data_split)
+
+xgboost_outer_folds <- vfold_cv(
+  xgboost_data_train,
+  v = 5,
+  repeats = 1,
+  strata = lasting_complications
+)
+
+xgboost_recipe <-
+  recipe(formula = lasting_complications ~ ., data = xgboost_data_train) %>%
+  step_rm(
+    one_of(
+      'institution',
+      # Outcomes
+      'complications_fever', 'complications_infection', 'complications_spasticity', 'complications_coagulopathy', 'complications_wound', 'complications_csf_leak', 'complications_subdural_hygroma', 'complications_nutritional', 'complications_other', 'infection_location_unknown', 'infection_location_urt', 'infection_location_lrt', 'infection_location_gu', 'infection_location_gi', 'infection_location_eye', 'infection_location_skin', 'infection_location_perinephric', 'infection_location_blood', 'infection_location_other', 'bleeding_diathesis', 'wound_malalignment', 'wound_stitch_sinus', 'wound_fluid_collection',
+      # 'lasting_complications',
+      'mortality_discharge', 'mortality_24h', 'mortality_30d', 'mortality_90d',
+      'seizures_longterm', 'shunt_longterm',
+      'gos_30d', 'gos_90d',
+      'discharge_destination',
+      # Extraneous data
+      'gini_year',
+      # Character variables
+      'record_id', 'country_code', 'sedation_other_meds', 'analgesia_other_agents', 'analgesia_max_dose', 'intraoperative_adverse_events_list', 'reoperation_other_indication', 'icp_meds_other_agent', 'hyperosm_other', 'hyperosm_dose', 'feeding_complications'
+    ),
+    ends_with('_complete')
+  ) %>%
+  #update_role(record_id, new_role = 'ID') %>%
+  step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>%
+  step_time(where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_mutate_at(where(is.POSIXct), fn = as.POSIXct.Date) %>%
+  step_holiday(where(is.Date), holidays = timeDate::listHolidays()) %>%
+  step_rm(where(is.Date) | where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors(), new_level = 'Missing') %>%
+  step_rm(ends_with('_Missing')) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>%
+  step_nzv(all_predictors())
+```
+
+```{r}
+#| label: lasting_complications xgboost
+
+xgboost_spec <-
+  boost_tree(
+    trees        = tune(),
+    tree_depth   = tune(),
+    min_n        = tune(),
+    learn_rate   = tune(),
+    loss_reduction = 20, #tune(),
+    sample_size  = tune(),
+    mtry         = tune()
+  ) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+xgboost_workflow <-
+  workflow() %>%
+  add_recipe(xgboost_recipe) %>%
+  add_model(xgboost_spec)
+
+xgboost_grid <-
+  grid_space_filling(
+    trees(range = c(100L, 1000L)),
+    tree_depth(),
+    min_n(),
+    learn_rate(range = c(-3, -1)),   # log10 scale → 0.001–0.1
+    # loss_reduction(),
+    sample_prop(),                    # maps to sample_size in boost_tree
+    finalize(mtry(), xgboost_data_train),          # resolves upper bound from data
+    size = 40
+  )
+
+xgboost_nested_results <- xgboost_outer_folds$splits %>%
+  purrr::imap(\(xgboost_outer_split, fold_id) {
+
+    cat('--- Outer fold', fold_id, '---\n')
+
+    # Inner resampling on the outer *analysis* set
+    xgboost_inner_folds <- vfold_cv(
+      analysis(xgboost_outer_split),
+      v       = 4,
+      strata  = lasting_complications
+    )
+
+    # Tune on inner folds (race ANOVA drops poor candidates early)
+    xgboost_tune <- tune_race_anova(
+      xgboost_workflow,
+      resamples = xgboost_inner_folds,
+      grid      = xgboost_grid,
+      metrics   = metric_set(roc_auc, pr_auc, accuracy, bal_accuracy, kap, mcc, mn_log_loss),
+      control   = control_race(
+        verbose = FALSE,
+        save_pred = FALSE,
+        event_level = 'second'
+      )
+    )
+
+    # Best hyperparameters from inner CV
+    xgboost_best_params <- select_best(xgboost_tune, metric = 'roc_auc')
+
+    # Finalize workflow and evaluate on the outer *assessment* set
+    xgboost_finalized_workflow <- finalize_workflow(xgboost_workflow, xgboost_best_params)
+
+    xgboost_outer_fit <- last_fit(xgboost_finalized_workflow, split = xgboost_outer_split)
+
+    # Return tidy results
+    list(
+      fold         = fold_id,
+      xgboost_best_params  = xgboost_best_params,
+      metrics      = collect_metrics(xgboost_outer_fit),
+      predictions  = collect_predictions(xgboost_outer_fit)
+    )
+  })
+
+xgboost_outer_metrics <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) mutate(r$metrics, fold = r$fold)) %>%
+  purrr::list_rbind()
+
+# xgboost_outer_metrics %>%
+#   summarise(
+#     mean_roc_auc = mean(.estimate[.metric == 'roc_auc']),
+#     sd_roc_auc   = sd(.estimate[.metric == 'roc_auc']),
+#     mean_accuracy = mean(.estimate[.metric == 'accuracy']),
+#     .by = .metric
+#   )
+
+xgboost_best_overall <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) {
+    r$xgboost_best_params %>% mutate(roc_auc = r$metrics$.estimate[r$metrics$.metric == 'roc_auc'][1])
+  }) %>%
+  purrr::list_rbind() %>%
+  slice_max(roc_auc, n = 1)
+
+xgboost_final_workflow_production <- finalize_workflow(
+  xgboost_workflow,
+  xgboost_best_overall
+)
+
+xgboost_last_fit <- last_fit(
+  xgboost_final_workflow_production,
+  split = xgboost_data_split
+)
+
+xgboost_metrics <- xgboost_last_fit %>%
+  collect_metrics()
+
+xgboost_predictions <- xgboost_last_fit %>%
+  collect_predictions()
+```
+
+### Summary Table
+
+```{r}
+xgboost_best_overall %>% 
+  mutate(
+    `Inner Cross-Validation Folds` = 3,
+    `Outer Cross-Validation Folds` = 5,
+    `Minimum Loss Reduction` = 20
+  ) %>% 
+  rename(
+    `Trees` = trees,
+    `Maximum Tree Depth` = tree_depth,
+    `Minimal Node Size` = min_n,
+		`Proportion Observations Sampled` = sample_size,
+		`Randomly Selected Predictors` = mtry,
+		`Learning Rate` = learn_rate
+  ) %>% 
+  select(
+    `Inner Cross-Validation Folds`,
+    `Outer Cross-Validation Folds`,
+    `Minimum Loss Reduction`,
+    `Trees`,
+    `Maximum Tree Depth`,
+    `Minimal Node Size`,
+		`Proportion Observations Sampled`,
+		`Randomly Selected Predictors`,
+		`Learning Rate`
+  ) %>% 
+  print_kable()
+```
+
+### Confusion Matrix
+
+```{r}
+jgn_xgboost_confusion_matrix(outcome_variable = 'lasting_complications', positive_level_num = 2)
+```
+
+### AUROC
+
+```{r}
+xgboost_roc <- roc(
+  response = xgboost_predictions %>% pull(lasting_complications),
+  predictor = xgboost_predictions %>% pull(`.pred_Complication Occurrence`),
+  ci = TRUE
+)
+
+xgboost_roc %>% 
+  jggroc()
+```
+
+### AUPRC
+
+```{r}
+jgn_xgboost_prc(outcome_variable = 'lasting_complications', positive_label = 'Complication Occurrence', positive_level_label = 'second')
+```
+
+### Calibration Plot
+
+```{r}
+xgboost_predictions %>% 
+  cal_plot_windowed(
+    truth = lasting_complications,
+    estimate = `.pred_Complication Occurrence`,
+    conf_level = 0.95,
+    event_level = 'second'
+  ) + 
+  theme_jgn() +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Empirical Probability'
+  )
+```
+
+### Shapley Variable Importance
+
+```{r}
+xgboost_shap <- 
+  xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_model <- xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_recipe <- xgboost_last_fit %>% 
+  extract_recipe()
+
+xgboost_shap_x <- xgboost_data_train %>% 
+  bake(object = xgboost_final_recipe, new_data = ., all_predictors()) %>% 
+  as.matrix()
+
+xgboost_shap <- shapviz(xgboost_final_model, X_pred = xgboost_shap_x)
+
+xgboost_shap$S %>% 
+  as_tibble() %>% 
+  summarise(
+    across(
+      everything(),
+      ~mean(abs(.x))
+    )
+  ) %>% 
+  pivot_longer(
+    everything(),
+    names_to = 'Variable',
+    values_to = 'Importance'
+  ) %>% 
+  arrange(desc(Importance)) %>% 
+  mutate(
+    Sign = if_else(
+      map_dbl(
+        Variable,
+        ~mean(xgboost_shap$S[, .x])
+      ) >= 0, 'Positive', 'Negative'
+    ) %>% factor()
+  ) %>% 
+  filter(Importance != 0) %>% 
+  print_kable()
+```
+
+### Shapley Importance Overlay
+
+```{r}
+sv_importance(xgboost_shap, kind = 'both', show_numbers = TRUE, alpha = 0.2, width = 0.2) + 
+  theme_bw(base_family = font) +
+  theme(text = element_text(family = font, size = 14))
+```
+
+:::
+
+```{r}
+#| label: Cleanup lasting_complications
+
+jgn_xgboost_cleanup('lasting_complications')
+```
+
+## Mortality at Discharge
+
+::: {.panel-tabset}
+
+```{r}
+#| label: mortality_discharge specification
+
+xgboost_data <- gns %>%
+  filter(!is.na(mortality_discharge))
+
+set.seed(42)
+xgboost_data_split <- initial_split(
+  xgboost_data,
+  strata = mortality_discharge
+)
+xgboost_data_train <- training(xgboost_data_split)
+xgboost_data_test <- testing(xgboost_data_split)
+
+xgboost_outer_folds <- vfold_cv(
+  xgboost_data_train,
+  v = 5,
+  repeats = 1,
+  strata = mortality_discharge
+)
+
+xgboost_recipe <-
+  recipe(formula = mortality_discharge ~ ., data = xgboost_data_train) %>%
+  step_rm(
+    one_of(
+      #'admission_interval',
+      'redcap_event_name',
+      'redcap_data_access_group',
+      'length_of_stay_redcap',
+      'institution',
+      # Outcomes
+      'lasting_complications',
+      #'mortality_discharge',
+      'mortality_24h', 'mortality_30d', 'mortality_90d',
+      'seizures_longterm', 'shunt_longterm',
+      'gos_30d', 'gos_90d',
+      'discharge_destination',
+      # Extraneous data
+      'gini_year',
+      # Character variables
+      'record_id', 'country_code', 'hosp_id', 'sedation_other_meds', 'analgesia_other_agents', 'analgesia_max_dose', 'intraoperative_adverse_events_list', 'reoperation_other_indication', 'icp_meds_other_agent', 'hyperosm_other', 'hyperosm_dose', 'feeding_complications'
+    ),
+    ends_with('_complete')
+  ) %>%
+  #update_role(record_id, new_role = 'ID') %>%
+  step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>%
+  step_time(where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_mutate_at(where(is.POSIXct), fn = as.POSIXct.Date) %>%
+  step_holiday(where(is.Date), holidays = timeDate::listHolidays()) %>%
+  step_rm(where(is.Date) | where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors(), new_level = 'Missing') %>%
+  step_rm(ends_with('_Missing')) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>%
+  step_nzv(all_predictors())
+```
+
+```{r}
+#| label: mortality_discharge xgboost
+
+xgboost_spec <-
+  boost_tree(
+    trees        = tune(),
+    tree_depth   = tune(),
+    min_n        = tune(),
+    learn_rate   = tune(),
+    loss_reduction = 15, #tune(),
+    sample_size  = tune(),
+    mtry         = tune()
+  ) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+xgboost_workflow <-
+  workflow() %>%
+  add_recipe(xgboost_recipe) %>%
+  add_model(xgboost_spec)
+
+xgboost_grid <-
+  grid_space_filling(
+    trees(range = c(100L, 1000L)),
+    tree_depth(),
+    min_n(),
+    learn_rate(range = c(-3, -1)),   # log10 scale → 0.001–0.1
+    # loss_reduction(),
+    sample_prop(),                    # maps to sample_size in boost_tree
+    finalize(mtry(), xgboost_data_train),          # resolves upper bound from data
+    size = 40
+  )
+
+xgboost_nested_results <- xgboost_outer_folds$splits %>%
+  purrr::imap(\(xgboost_outer_split, fold_id) {
+
+    cat('--- Outer fold', fold_id, '---\n')
+
+    # Inner resampling on the outer *analysis* set
+    xgboost_inner_folds <- vfold_cv(
+      analysis(xgboost_outer_split),
+      v       = 4,
+      strata  = mortality_discharge
+    )
+
+    # Tune on inner folds (race ANOVA drops poor candidates early)
+    xgboost_tune <- tune_race_anova(
+      xgboost_workflow,
+      resamples = xgboost_inner_folds,
+      grid      = xgboost_grid,
+      metrics   = metric_set(roc_auc, pr_auc, accuracy, bal_accuracy, kap, mcc, mn_log_loss),
+      control   = control_race(
+        verbose = FALSE,
+        save_pred = FALSE,
+        event_level = 'second'
+      )
+    )
+
+    # Best hyperparameters from inner CV
+    xgboost_best_params <- select_best(xgboost_tune, metric = 'roc_auc')
+
+    # Finalize workflow and evaluate on the outer *assessment* set
+    xgboost_finalized_workflow <- finalize_workflow(xgboost_workflow, xgboost_best_params)
+
+    xgboost_outer_fit <- last_fit(xgboost_finalized_workflow, split = xgboost_outer_split)
+
+    # Return tidy results
+    list(
+      fold         = fold_id,
+      xgboost_best_params  = xgboost_best_params,
+      metrics      = collect_metrics(xgboost_outer_fit),
+      predictions  = collect_predictions(xgboost_outer_fit)
+    )
+  })
+
+xgboost_outer_metrics <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) mutate(r$metrics, fold = r$fold)) %>%
+  purrr::list_rbind()
+
+# xgboost_outer_metrics %>%
+#   summarise(
+#     mean_roc_auc = mean(.estimate[.metric == 'roc_auc']),
+#     sd_roc_auc   = sd(.estimate[.metric == 'roc_auc']),
+#     mean_accuracy = mean(.estimate[.metric == 'accuracy']),
+#     .by = .metric
+#   )
+
+xgboost_best_overall <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) {
+    r$xgboost_best_params %>% mutate(roc_auc = r$metrics$.estimate[r$metrics$.metric == 'roc_auc'][1])
+  }) %>%
+  purrr::list_rbind() %>%
+  slice_max(roc_auc, n = 1)
+
+xgboost_final_workflow_production <- finalize_workflow(
+  xgboost_workflow,
+  xgboost_best_overall
+)
+
+xgboost_last_fit <- last_fit(
+  xgboost_final_workflow_production,
+  split = xgboost_data_split
+)
+
+xgboost_metrics <- xgboost_last_fit %>%
+  collect_metrics()
+
+xgboost_predictions <- xgboost_last_fit %>%
+  collect_predictions()
+```
+
+### Summary Table
+
+```{r}
+xgboost_best_overall %>% 
+  mutate(
+    `Inner Cross-Validation Folds` = 3,
+    `Outer Cross-Validation Folds` = 5,
+    `Minimum Loss Reduction` = 15
+  ) %>% 
+  rename(
+    `Trees` = trees,
+    `Maximum Tree Depth` = tree_depth,
+    `Minimal Node Size` = min_n,
+		`Proportion Observations Sampled` = sample_size,
+		`Randomly Selected Predictors` = mtry,
+		`Learning Rate` = learn_rate
+  ) %>% 
+  select(
+    `Inner Cross-Validation Folds`,
+    `Outer Cross-Validation Folds`,
+    `Minimum Loss Reduction`,
+    `Trees`,
+    `Maximum Tree Depth`,
+    `Minimal Node Size`,
+		`Proportion Observations Sampled`,
+		`Randomly Selected Predictors`,
+		`Learning Rate`
+  ) %>% 
+  print_kable()
+```
+
+### Confusion Matrix
+
+```{r}
+jgn_xgboost_confusion_matrix(outcome_variable = 'mortality_discharge', positive_level_num = 2)
+```
+
+### AUROC
+
+```{r}
+xgboost_roc <- roc(
+  response = xgboost_predictions %>% pull(mortality_discharge),
+  predictor = xgboost_predictions %>% pull(`.pred_Deceased`),
+  ci = TRUE
+)
+
+xgboost_roc %>% 
+  jggroc()
+```
+
+### AUPRC
+
+```{r}
+jgn_xgboost_prc(outcome_variable = 'mortality_discharge', positive_label = 'Deceased', positive_level_label = 'second')
+```
+
+### Calibration Plot
+
+```{r}
+xgboost_predictions %>% 
+  cal_plot_windowed(
+    truth = mortality_discharge,
+    estimate = `.pred_Deceased`,
+    conf_level = 0.95,
+    event_level = 'second'
+  ) + 
+  theme_jgn() +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Empirical Probability'
+  )
+```
+
+### Shapley Variable Importance
+
+```{r}
+xgboost_shap <- 
+  xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_model <- xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_recipe <- xgboost_last_fit %>% 
+  extract_recipe()
+
+xgboost_shap_x <- xgboost_data_train %>% 
+  bake(object = xgboost_final_recipe, new_data = ., all_predictors()) %>% 
+  as.matrix()
+
+xgboost_shap <- shapviz(xgboost_final_model, X_pred = xgboost_shap_x)
+
+xgboost_shap$S %>% 
+  as_tibble() %>% 
+  summarise(
+    across(
+      everything(),
+      ~mean(abs(.x))
+    )
+  ) %>% 
+  pivot_longer(
+    everything(),
+    names_to = 'Variable',
+    values_to = 'Importance'
+  ) %>% 
+  arrange(desc(Importance)) %>% 
+  mutate(
+    Sign = if_else(
+      map_dbl(
+        Variable,
+        ~mean(xgboost_shap$S[, .x])
+      ) >= 0, 'Positive', 'Negative'
+    ) %>% factor()
+  ) %>% 
+  filter(Importance != 0) %>% 
+  print_kable()
+```
+
+### Shapley Importance Overlay
+
+```{r}
+sv_importance(xgboost_shap, kind = 'both', show_numbers = TRUE, alpha = 0.2, width = 0.2) + 
+  theme_bw(base_family = font) +
+  theme(text = element_text(family = font, size = 14))
+```
+
+:::
+
+```{r}
+#| label: Cleanup mortality_discharge
+
+jgn_xgboost_cleanup('mortality_discharge')
+```
+
+## Mortality at 90 days Post-Injury
+
+::: {.panel-tabset}
+
+```{r}
+#| label: mortality_90d specification
+
+xgboost_data <- gns %>%
+  filter(!is.na(mortality_90d))
+
+set.seed(42)
+xgboost_data_split <- initial_split(
+  xgboost_data,
+  strata = mortality_90d
+)
+xgboost_data_train <- training(xgboost_data_split)
+xgboost_data_test <- testing(xgboost_data_split)
+
+xgboost_outer_folds <- vfold_cv(
+  xgboost_data_train,
+  v = 5,
+  repeats = 1,
+  strata = mortality_90d
+)
+
+xgboost_recipe <-
+  recipe(formula = mortality_90d ~ ., data = xgboost_data_train) %>%
+  step_rm(
+    one_of(
+      #'admission_interval',
+      'redcap_event_name',
+      'redcap_data_access_group',
+      'length_of_stay_redcap',
+      'institution',
+      # Outcomes
+      'lasting_complications',
+      'mortality_discharge', 'mortality_24h', 'mortality_30d',
+      #'mortality_90d',
+      'seizures_longterm', 'shunt_longterm',
+      'gos_30d', 'gos_90d',
+      'discharge_destination',
+      # Extraneous data
+      'gini_year',
+      # Character variables
+      'record_id', 'country_code', 'hosp_id', 'sedation_other_meds', 'analgesia_other_agents', 'analgesia_max_dose', 'intraoperative_adverse_events_list', 'reoperation_other_indication', 'icp_meds_other_agent', 'hyperosm_other', 'hyperosm_dose', 'feeding_complications'
+    ),
+    ends_with('_complete')
+  ) %>%
+  #update_role(record_id, new_role = 'ID') %>%
+  step_date(where(is.Date) | where(is.POSIXct), features = c('dow', 'doy', 'week', 'month', 'quarter', 'semester', 'year')) %>%
+  step_time(where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_mutate_at(where(is.POSIXct), fn = as.POSIXct.Date) %>%
+  step_holiday(where(is.Date), holidays = timeDate::listHolidays()) %>%
+  step_rm(where(is.Date) | where(is.POSIXlt) | where(is.POSIXct)) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors(), new_level = 'Missing') %>%
+  step_rm(ends_with('_Missing')) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>%
+  step_nzv(all_predictors())
+```
+
+```{r}
+#| label: mortality_90d xgboost
+
+xgboost_spec <-
+  boost_tree(
+    trees        = tune(),
+    tree_depth   = tune(),
+    min_n        = tune(),
+    learn_rate   = tune(),
+    loss_reduction = 15, #tune(),
+    sample_size  = tune(),
+    mtry         = tune()
+  ) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+xgboost_workflow <-
+  workflow() %>%
+  add_recipe(xgboost_recipe) %>%
+  add_model(xgboost_spec)
+
+xgboost_grid <-
+  grid_space_filling(
+    trees(range = c(100L, 1000L)),
+    tree_depth(),
+    min_n(),
+    learn_rate(range = c(-3, -1)),   # log10 scale → 0.001–0.1
+    # loss_reduction(),
+    sample_prop(),                    # maps to sample_size in boost_tree
+    finalize(mtry(), xgboost_data_train),          # resolves upper bound from data
+    size = 40
+  )
+
+xgboost_nested_results <- xgboost_outer_folds$splits %>%
+  purrr::imap(\(xgboost_outer_split, fold_id) {
+
+    cat('--- Outer fold', fold_id, '---\n')
+
+    # Inner resampling on the outer *analysis* set
+    xgboost_inner_folds <- vfold_cv(
+      analysis(xgboost_outer_split),
+      v       = 4,
+      strata  = mortality_90d
+    )
+
+    # Tune on inner folds (race ANOVA drops poor candidates early)
+    xgboost_tune <- tune_race_anova(
+      xgboost_workflow,
+      resamples = xgboost_inner_folds,
+      grid      = xgboost_grid,
+      metrics   = metric_set(roc_auc, pr_auc, accuracy, bal_accuracy, kap, mcc, mn_log_loss),
+      control   = control_race(
+        verbose = FALSE,
+        save_pred = FALSE,
+        event_level = 'second'
+      )
+    )
+
+    # Best hyperparameters from inner CV
+    xgboost_best_params <- select_best(xgboost_tune, metric = 'roc_auc')
+
+    # Finalize workflow and evaluate on the outer *assessment* set
+    xgboost_finalized_workflow <- finalize_workflow(xgboost_workflow, xgboost_best_params)
+
+    xgboost_outer_fit <- last_fit(xgboost_finalized_workflow, split = xgboost_outer_split)
+
+    # Return tidy results
+    list(
+      fold         = fold_id,
+      xgboost_best_params  = xgboost_best_params,
+      metrics      = collect_metrics(xgboost_outer_fit),
+      predictions  = collect_predictions(xgboost_outer_fit)
+    )
+  })
+
+xgboost_outer_metrics <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) mutate(r$metrics, fold = r$fold)) %>%
+  purrr::list_rbind()
+
+# xgboost_outer_metrics %>%
+#   summarise(
+#     mean_roc_auc = mean(.estimate[.metric == 'roc_auc']),
+#     sd_roc_auc   = sd(.estimate[.metric == 'roc_auc']),
+#     mean_accuracy = mean(.estimate[.metric == 'accuracy']),
+#     .by = .metric
+#   )
+
+xgboost_best_overall <-
+  xgboost_nested_results %>%
+  purrr::map(\(r) {
+    r$xgboost_best_params %>% mutate(roc_auc = r$metrics$.estimate[r$metrics$.metric == 'roc_auc'][1])
+  }) %>%
+  purrr::list_rbind() %>%
+  slice_max(roc_auc, n = 1)
+
+xgboost_final_workflow_production <- finalize_workflow(
+  xgboost_workflow,
+  xgboost_best_overall
+)
+
+xgboost_last_fit <- last_fit(
+  xgboost_final_workflow_production,
+  split = xgboost_data_split
+)
+
+xgboost_metrics <- xgboost_last_fit %>%
+  collect_metrics()
+
+xgboost_predictions <- xgboost_last_fit %>%
+  collect_predictions()
+```
+
+### Summary Table
+
+```{r}
+xgboost_best_overall %>% 
+  mutate(
+    `Inner Cross-Validation Folds` = 3,
+    `Outer Cross-Validation Folds` = 5,
+    `Minimum Loss Reduction` = 20
+  ) %>% 
+  rename(
+    `Trees` = trees,
+    `Maximum Tree Depth` = tree_depth,
+    `Minimal Node Size` = min_n,
+		`Proportion Observations Sampled` = sample_size,
+		`Randomly Selected Predictors` = mtry,
+		`Learning Rate` = learn_rate
+  ) %>% 
+  select(
+    `Inner Cross-Validation Folds`,
+    `Outer Cross-Validation Folds`,
+    `Minimum Loss Reduction`,
+    `Trees`,
+    `Maximum Tree Depth`,
+    `Minimal Node Size`,
+		`Proportion Observations Sampled`,
+		`Randomly Selected Predictors`,
+		`Learning Rate`
+  ) %>% 
+  print_kable()
+```
+
+### Confusion Matrix
+
+```{r}
+jgn_xgboost_confusion_matrix(outcome_variable = 'mortality_90d', positive_level_num = 2)
+```
+
+### AUROC
+
+```{r}
+xgboost_roc <- roc(
+  response = xgboost_predictions %>% pull(mortality_90d),
+  predictor = xgboost_predictions %>% pull(`.pred_Deceased`),
+  ci = TRUE
+)
+
+xgboost_roc %>% 
+  jggroc()
+```
+
+### AUPRC
+
+```{r}
+jgn_xgboost_prc(outcome_variable = 'mortality_90d', positive_label = 'Deceased', positive_level_label = 'second')
+```
+
+### Calibration Plot
+
+```{r}
+xgboost_predictions %>% 
+  cal_plot_windowed(
+    truth = mortality_90d,
+    estimate = `.pred_Deceased`,
+    conf_level = 0.95,
+    event_level = 'second'
+  ) + 
+  theme_jgn() +
+  labs(
+    x = 'Predicted Probability',
+    y = 'Empirical Probability'
+  )
+```
+
+### Shapley Variable Importance
+
+```{r}
+xgboost_shap <- 
+  xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_model <- xgboost_last_fit %>% 
+  extract_fit_parsnip() %>% 
+  extract_fit_engine()
+
+xgboost_final_recipe <- xgboost_last_fit %>% 
+  extract_recipe()
+
+xgboost_shap_x <- xgboost_data_train %>% 
+  bake(object = xgboost_final_recipe, new_data = ., all_predictors()) %>% 
+  as.matrix()
+
+xgboost_shap <- shapviz(xgboost_final_model, X_pred = xgboost_shap_x)
+
+xgboost_shap$S %>% 
+  as_tibble() %>% 
+  summarise(
+    across(
+      everything(),
+      ~mean(abs(.x))
+    )
+  ) %>% 
+  pivot_longer(
+    everything(),
+    names_to = 'Variable',
+    values_to = 'Importance'
+  ) %>% 
+  arrange(desc(Importance)) %>% 
+  mutate(
+    Sign = if_else(
+      map_dbl(
+        Variable,
+        ~mean(xgboost_shap$S[, .x])
+      ) >= 0, 'Positive', 'Negative'
+    ) %>% factor()
+  ) %>% 
+  filter(Importance != 0) %>% 
+  print_kable()
+```
+
+### Shapley Importance Overlay
+
+```{r}
+sv_importance(xgboost_shap, kind = 'both', show_numbers = TRUE, alpha = 0.2, width = 0.2) + 
+  theme_bw(base_family = font) +
+  theme(text = element_text(family = font, size = 14))
+```
+
+:::
+
+```{r}
+#| label: Cleanup mortality_90d
+
+jgn_xgboost_cleanup('mortality_90d')
+```
+
+:::
+
+
+***
+
+:::{.callout-note .raw-code collapse="true" icon=false}
+
+# `R` Session Information
+
+```{r}
+jgntools::print_session_info()
+```
+
+:::
