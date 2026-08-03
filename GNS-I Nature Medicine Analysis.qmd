@@ -1223,15 +1223,15 @@ ggplot(
     ) %>% 
     mutate(
       sex_cat = case_when(
-        sex >= 0 & sex < 10 ~ '0 - 10',
-        sex >= 10 & sex < 20 ~ '10 - 20',
-        sex >= 20 & sex < 30 ~ '20 - 30',
-        sex >= 30 & sex < 40 ~ '30 - 40',
-        sex >= 40 & sex <= 50 ~ '40 - 50',
-        sex >= 50 & sex <= 60 ~ '50 - 60',
+        sex >= 0 & sex < 10 ~ '0 - 9',
+        sex >= 10 & sex < 20 ~ '10 - 19',
+        sex >= 20 & sex < 30 ~ '20 - 29',
+        sex >= 30 & sex < 40 ~ '30 - 39',
+        sex >= 40 & sex <= 50 ~ '40 - 49',
+        sex >= 50 & sex <= 60 ~ '50 - 59',
         .default = NA_character_
       ) %>% 
-        factor(c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50','50 - 60'))
+        factor(c('0 - 9','10 - 19','20 - 29','30 - 39','40 - 49','50 - 59'))
     ),
   aes(
     fill = sex_cat
@@ -1336,14 +1336,14 @@ ggplot(
   data = world_sf %>% 
     mutate(
       mortality_discharge_cat = case_when(
-        mortality_discharge >= 0 & mortality_discharge < 10 ~ '0 - 10',
-        mortality_discharge >= 10 & mortality_discharge < 20 ~ '10 - 20',
-        mortality_discharge >= 20 & mortality_discharge < 30 ~ '20 - 30',
-        mortality_discharge >= 30 & mortality_discharge < 40 ~ '30 - 40',
+        mortality_discharge >= 0 & mortality_discharge < 10 ~ '0 - 9',
+        mortality_discharge >= 10 & mortality_discharge < 20 ~ '10 - 19',
+        mortality_discharge >= 20 & mortality_discharge < 30 ~ '20 - 29',
+        mortality_discharge >= 30 & mortality_discharge < 40 ~ '30 - 39',
         mortality_discharge >= 40 & mortality_discharge <= 50 ~ '40 - 50',
         .default = NA_character_
       ) %>% 
-        factor(c('0 - 10','10 - 20','20 - 30','30 - 40','40 - 50'))
+        factor(c('0 - 9','10 - 19','20 - 29','30 - 39','40 - 50'))
     ),
   aes(
     fill = mortality_discharge_cat
@@ -1391,12 +1391,12 @@ ggplot(
   data = world_sf %>% 
     mutate(
       mortality_90d_cat = case_when(
-        mortality_90d >= 0 & mortality_90d < 20 ~ '0 - 20',
-        mortality_90d >= 20 & mortality_90d < 40 ~ '20 - 40',
-        mortality_90d >= 40 & mortality_90d < 60 ~ '40 - 60',
+        mortality_90d >= 0 & mortality_90d < 20 ~ '0 - 19',
+        mortality_90d >= 20 & mortality_90d < 40 ~ '20 - 39',
+        mortality_90d >= 40 & mortality_90d < 60 ~ '40 - 59',
         mortality_90d >= 60 & mortality_90d <= 80 ~ '60 - 80'
       ) %>% 
-        factor(c('0 - 20','20 - 40','40 - 60','60 - 80'))
+        factor(c('0 - 19','20 - 39','40 - 59','60 - 80'))
     ),
   aes(
     fill = mortality_90d_cat
@@ -1444,13 +1444,13 @@ ggplot(
   data = world_sf %>% 
     mutate(
       lasting_complications_cat = case_when(
-        lasting_complications >= 0 & lasting_complications < 20 ~ '0 - 20',
-        lasting_complications >= 20 & lasting_complications < 40 ~ '20 - 40',
-        lasting_complications >= 40 & lasting_complications < 60 ~ '40 - 60',
-        lasting_complications >= 60 & lasting_complications < 80 ~ '60 - 80',
+        lasting_complications >= 0 & lasting_complications < 20 ~ '0 - 19',
+        lasting_complications >= 20 & lasting_complications < 40 ~ '20 - 39',
+        lasting_complications >= 40 & lasting_complications < 60 ~ '40 - 59',
+        lasting_complications >= 60 & lasting_complications <= 80 ~ '60 - 80',
         .default = NA_character_
       ) %>% 
-        factor(c('0 - 20','20 - 40','40 - 60','60 - 80'))
+        factor(c('0 - 19','20 - 39','40 - 59','60 - 80'))
     ),
   aes(
     fill = lasting_complications_cat
